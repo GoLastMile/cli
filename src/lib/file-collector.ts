@@ -76,8 +76,20 @@ export async function collectFiles(
       const fullPath = join(currentDir, entry.name);
       const relativePath = relative(dir, fullPath);
 
-      // Check ignore patterns
-      if (allIgnore.some(pattern => relativePath.includes(pattern))) {
+      // Check ignore patterns - match full path segments, not substrings
+      // This prevents ".gitignore" from being ignored due to ".git" pattern
+      const shouldIgnore = allIgnore.some(pattern => {
+        // Exact match at root level
+        if (relativePath === pattern) return true;
+        // Match at start of path (e.g., "node_modules/..." matches "node_modules")
+        if (relativePath.startsWith(pattern + '/')) return true;
+        // Match as a path segment (e.g., "foo/node_modules/bar" matches "node_modules")
+        if (relativePath.includes('/' + pattern + '/')) return true;
+        // Match at end as a directory (e.g., "foo/node_modules" matches "node_modules")
+        if (relativePath.endsWith('/' + pattern)) return true;
+        return false;
+      });
+      if (shouldIgnore) {
         continue;
       }
 
