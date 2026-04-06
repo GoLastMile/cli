@@ -89,11 +89,19 @@ export function printHeader(): void {
  |_____\\__,_|___/\\__|_|  |_|_|_|\\___|
 `);
 
+  // Center the taglines within the box (ASCII art is ~37 chars wide)
+  const line1 = 'You build the product.';
+  const line2 = 'We handle the tedious parts.';
+  const boxWidth = 37;
+  const pad1 = ' '.repeat(Math.floor((boxWidth - line1.length) / 2));
+  const pad2 = ' '.repeat(Math.floor((boxWidth - line2.length) / 2));
+
   if (noColor) {
     console.log(title);
-    console.log('  Production Readiness Analyzer\n');
+    console.log(`${pad1}${line1}\n${pad2}${line2}\n`);
   } else {
-    console.log(boxen(title + '\n' + chalk.dim('  Production Readiness Analyzer'), {
+    const tagline = chalk.dim(`${pad1}${line1}`) + '\n' + chalk.cyan(`${pad2}${line2}`);
+    console.log(boxen(title + '\n' + tagline, {
       padding: { top: 0, bottom: 0, left: 1, right: 1 },
       borderStyle: 'round',
       borderColor: 'magenta',
@@ -187,6 +195,8 @@ export function printStats(stats: AnalysisStats): void {
       fixableText;
 
   console.log(line);
+  // Extra spacing after stats before findings
+  console.log();
   console.log();
 }
 
@@ -218,23 +228,50 @@ export function printClassification(classification: Classification): void {
 
   console.log(line);
 
-  // Features as tags
+  // Features as tags with intelligent wrapping
   if (classification.features.length > 0) {
-    const maxFeatures = 8;
+    const termWidth = getTerminalWidth();
+    const prefixText = '  Features: ';
+    const prefix = noColor ? prefixText : chalk.dim(prefixText);
+    const indent = '            '; // Same width as "  Features: "
+    const maxFeatures = 12;
     const displayFeatures = classification.features.slice(0, maxFeatures);
 
-    const featureTags = noColor
-      ? displayFeatures.map(f => `[${f}]`).join(' ')
-      : displayFeatures.map(f => chalk.bgGray.white(` ${f} `)).join(' ');
+    let currentLine = prefix;
+    const lines: string[] = [];
 
+    displayFeatures.forEach((f, i) => {
+      const tag = noColor ? `[${f}]` : chalk.bgGray.white(` ${f} `);
+      const tagLen = f.length + 3; // Account for brackets/padding
+
+      // Estimate current line length (strip ANSI codes)
+      const currentLen = currentLine.replace(/\x1b\[[0-9;]*m/g, '').length;
+      const isFirstTag = currentLen === prefixText.length;
+
+      if (currentLen + tagLen + 1 > termWidth - 2 && !isFirstTag) {
+        lines.push(currentLine);
+        currentLine = indent + tag;
+      } else {
+        currentLine += (isFirstTag ? '' : ' ') + tag;
+      }
+    });
+
+    // Add "+N more" if needed
     const moreCount = classification.features.length - maxFeatures;
-    const moreText = moreCount > 0
-      ? (noColor ? ` +${moreCount} more` : chalk.dim(` +${moreCount} more`))
-      : '';
+    if (moreCount > 0) {
+      const moreText = noColor ? `+${moreCount} more` : chalk.dim(`+${moreCount} more`);
+      currentLine += ' ' + moreText;
+    }
 
-    console.log((noColor ? '  Features: ' : chalk.dim('  Features: ')) + featureTags + moreText);
+    if (currentLine.trim()) {
+      lines.push(currentLine);
+    }
+
+    console.log(lines.join('\n'));
   }
 
+  // Extra spacing after classification block
+  console.log();
   console.log();
 }
 
@@ -278,78 +315,67 @@ export function formatGaps(gaps: Gap[], options: { verbose?: boolean } = {}): st
 }
 
 /**
- * Format a section of gaps with clean list layout
+ * Format a section of gaps with compact, scannable layout
+ * Inspired by ESLint's stylish formatter
  */
 function formatGapSection(gaps: Gap[], severity: 'critical' | 'warning' | 'info', termWidth: number): string {
   const config = {
     critical: {
-      label: noColor ? '[CRITICAL]' : chalk.bgRed.white.bold(' CRITICAL '),
+      label: noColor ? 'CRITICAL' : chalk.red.bold('CRITICAL'),
       color: noColor ? (s: string) => s : chalk.red,
-      icon: noColor ? 'X' : '✗',
-      borderChar: noColor ? '-' : '─',
+      icon: noColor ? 'x' : '✗',
     },
     warning: {
-      label: noColor ? '[WARNING]' : chalk.bgYellow.black.bold(' WARNING '),
+      label: noColor ? 'WARNING' : chalk.yellow.bold('WARNING'),
       color: noColor ? (s: string) => s : chalk.yellow,
       icon: noColor ? '!' : '⚠',
-      borderChar: noColor ? '-' : '─',
     },
     info: {
-      label: noColor ? '[INFO]' : chalk.bgBlue.white.bold(' INFO '),
+      label: noColor ? 'INFO' : chalk.blue.bold('INFO'),
       color: noColor ? (s: string) => s : chalk.blue,
-      icon: noColor ? '*' : '●',
-      borderChar: noColor ? '-' : '─',
+      icon: noColor ? 'i' : '●',
     },
   };
 
   const cfg = config[severity];
   const lines: string[] = [];
 
-  // Header
+  // Compact header: "CRITICAL (1)" or "WARNING (9)"
   const countText = noColor
-    ? `${gaps.length} ${gaps.length === 1 ? 'issue' : 'issues'}`
-    : chalk.white.bold(gaps.length.toString()) + chalk.dim(` ${gaps.length === 1 ? 'issue' : 'issues'}`);
+    ? `(${gaps.length})`
+    : chalk.dim(`(${gaps.length})`);
   lines.push(`${cfg.label} ${countText}`);
+  lines.push(''); // blank line after header
 
-  // Left border character
-  const border = noColor ? '|' : chalk.gray('│');
+  // Calculate max title length for alignment (cap at reasonable width)
+  const maxTitleLen = Math.min(
+    Math.max(...gaps.map(g => g.title.length)),
+    termWidth - 40 // leave room for file path
+  );
 
-  // Each gap
-  gaps.forEach((gap, index) => {
-    // Title line
-    if (noColor) {
-      lines.push(`${border} ${cfg.icon} ${gap.title}`);
-    } else {
-      const icon = cfg.color(cfg.icon);
-      const title = cfg.color.bold(gap.title);
-      lines.push(`${border} ${icon} ${title}`);
-    }
+  // Each gap on 1-2 lines max
+  gaps.forEach((gap) => {
+    const icon = noColor ? cfg.icon : cfg.color(cfg.icon);
+    const title = noColor ? gap.title : cfg.color(gap.title);
+    const categoryTag = noColor ? `[${gap.category}]` : chalk.dim(`[${gap.category}]`);
+    const fixableTag = gap.autoFixable ? (noColor ? ' [fixable]' : chalk.green(' [fixable]')) : '';
 
-    // File path with clickable link
     if (gap.filePath) {
-      const link = fileLink(gap.filePath, gap.lineNumber);
-      if (noColor) {
-        lines.push(`${border}   ${gap.filePath}${gap.lineNumber ? `:${gap.lineNumber}` : ''}`);
-      } else {
-        lines.push(`${border}   ${link}`);
-      }
+      // With file: title on line 1, file + category on line 2
+      const fileStr = gap.lineNumber ? `${gap.filePath}:${gap.lineNumber}` : gap.filePath;
+      const filePart = noColor ? fileStr : chalk.dim(fileStr);
+      lines.push(`  ${icon} ${title}`);
+      lines.push(`    ${filePart} ${categoryTag}${fixableTag}`);
+    } else {
+      // No file: title + category on same line
+      lines.push(`  ${icon} ${title} ${categoryTag}${fixableTag}`);
     }
 
-    // Suggested fix
+    // Suggested fix (shorter, more actionable)
     if (gap.suggestedFix) {
-      if (noColor) {
-        const fixable = gap.autoFixable ? ' [auto-fixable]' : '';
-        lines.push(`${border}   -> ${gap.suggestedFix}${fixable}`);
-      } else {
-        const fix = chalk.cyan(gap.suggestedFix);
-        const fixable = gap.autoFixable ? chalk.green(' [auto-fixable]') : '';
-        lines.push(`${border}   ${chalk.dim('→')} ${fix}${fixable}`);
-      }
-    }
-
-    // Empty line between gaps (not after last one)
-    if (index < gaps.length - 1) {
-      lines.push(border);
+      const arrow = noColor ? '->' : chalk.dim('→');
+      const fix = noColor ? gap.suggestedFix : chalk.cyan(gap.suggestedFix);
+      lines.push(`    ${arrow} ${fix}`);
     }
   });
 
@@ -376,7 +402,7 @@ export function printSummary(gaps: Gap[]): void {
   for (const cat of orderedCategories) {
     const count = categories.get(cat);
     if (count) {
-      const icon = noColor ? '' : getCategoryIcon(cat) + ' ';
+      const icon = noColor ? '' : getCategoryIcon(cat);
       parts.push(`${icon}${count} ${cat}`);
     }
   }
@@ -384,30 +410,31 @@ export function printSummary(gaps: Gap[]): void {
   // Any remaining categories
   for (const [cat, count] of categories) {
     if (!orderedCategories.includes(cat)) {
-      parts.push(`${count} ${cat}`);
+      const icon = noColor ? '' : getCategoryIcon(cat);
+      parts.push(`${icon}${count} ${cat}`);
     }
   }
 
-  const separator = noColor ? ', ' : chalk.dim(' · ');
-  console.log((noColor ? '  Found: ' : chalk.dim('  Found: ')) + parts.join(separator));
+  // Display vertically for better readability
+  const header = noColor ? '  Found:' : chalk.dim('  Found:');
+  console.log(header);
+
+  parts.forEach(part => {
+    const line = noColor ? `    ${part}` : chalk.dim(`    ${part}`);
+    console.log(line);
+  });
+
   console.log();
 }
 
 /**
  * Get an icon for a category
+ * Returns empty string - emojis removed due to inconsistent terminal rendering
  */
-function getCategoryIcon(category: string): string {
-  const icons: Record<string, string> = {
-    security: '🔒',
-    auth: '🔑',
-    testing: '🧪',
-    observability: '📊',
-    cicd: '🚀',
-    dependencies: '📦',
-    git: '📝',
-    errors: '⚠️',
-  };
-  return icons[category] || '•';
+function getCategoryIcon(_category: string): string {
+  // Emojis disabled - they have inconsistent widths across terminals
+  // causing alignment issues that can't be reliably fixed
+  return '';
 }
 
 /**
