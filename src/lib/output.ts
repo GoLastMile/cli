@@ -2,6 +2,7 @@ import chalk from 'chalk';
 import boxen from 'boxen';
 import gradient from 'gradient-string';
 import Table from 'cli-table3';
+import ora, { Ora } from 'ora';
 
 interface Gap {
   id: string;
@@ -13,6 +14,23 @@ interface Gap {
   description: string;
   suggestedFix?: string;
 }
+
+interface Classification {
+  architecture: { type: string; confidence: number };
+  purpose: { type: string; confidence: number };
+  features: string[];
+  confidence: number;
+  signals?: string[];
+}
+
+// Analysis step definition
+interface AnalysisStep {
+  label: string;
+  category: string;
+}
+
+// Spinner frames for a nicer look
+const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 // Custom gradient for LastMile branding
 const lastmileGradient = gradient(['#667eea', '#764ba2']);
@@ -93,6 +111,55 @@ export function printScore(score: number): void {
   );
 
   console.log(scoreBox);
+  console.log();
+}
+
+/**
+ * Print the app classification info
+ */
+export function printClassification(classification: Classification): void {
+  // Format architecture type (e.g., "api-only" -> "API Only")
+  const formatType = (type: string): string => {
+    return type
+      .split('-')
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ');
+  };
+
+  // Get confidence color
+  const getConfidenceColor = (conf: number) => {
+    if (conf >= 80) return chalk.green;
+    if (conf >= 50) return chalk.yellow;
+    return chalk.dim;
+  };
+
+  const archConf = getConfidenceColor(classification.architecture.confidence);
+  const purposeConf = getConfidenceColor(classification.purpose.confidence);
+
+  // Architecture and Purpose line
+  const archLabel = chalk.cyan.bold(formatType(classification.architecture.type));
+  const purposeLabel = chalk.magenta.bold(formatType(classification.purpose.type));
+
+  console.log(
+    chalk.dim('  Detected: ') +
+    archLabel + chalk.dim(` (${classification.architecture.confidence}%)`) +
+    chalk.dim(' + ') +
+    purposeLabel + chalk.dim(` (${classification.purpose.confidence}%)`)
+  );
+
+  // Features as tags
+  if (classification.features.length > 0) {
+    const featureTags = classification.features
+      .slice(0, 8) // Limit to 8 features to avoid wrapping
+      .map(f => chalk.bgGray.white(` ${f} `))
+      .join(' ');
+
+    const moreCount = classification.features.length - 8;
+    const moreText = moreCount > 0 ? chalk.dim(` +${moreCount} more`) : '';
+
+    console.log(chalk.dim('  Features: ') + featureTags + moreText);
+  }
+
   console.log();
 }
 
@@ -219,7 +286,7 @@ export function printFooter(gapCount: number): void {
 }
 
 /**
- * Print analysis steps (for animated progress)
+ * Print analysis steps (for animated progress) - DEPRECATED, use AnalysisProgress
  */
 export function getAnalysisSteps(): string[] {
   return [
@@ -232,4 +299,175 @@ export function getAnalysisSteps(): string[] {
     'Evaluating observability setup...',
     'Calculating readiness score...',
   ];
+}
+
+/**
+ * Analysis steps with categories for enhanced progress display
+ */
+const ANALYSIS_STEPS: AnalysisStep[] = [
+  { label: 'Scanning project structure', category: 'files' },
+  { label: 'Analyzing security patterns', category: 'security' },
+  { label: 'Checking security headers', category: 'security-headers' },
+  { label: 'Reviewing authentication setup', category: 'auth' },
+  { label: 'Analyzing API patterns', category: 'api' },
+  { label: 'Reviewing error handling', category: 'errors' },
+  { label: 'Analyzing logging patterns', category: 'logging' },
+  { label: 'Scanning test coverage', category: 'testing' },
+  { label: 'Inspecting dependencies', category: 'dependencies' },
+  { label: 'Validating CI/CD pipeline', category: 'cicd' },
+  { label: 'Checking build configuration', category: 'build' },
+  { label: 'Evaluating observability', category: 'observability' },
+  { label: 'Checking environment config', category: 'configuration' },
+  { label: 'Validating deployment setup', category: 'deployment' },
+  { label: 'Checking health endpoints', category: 'monitoring' },
+  { label: 'Analyzing database config', category: 'database' },
+  { label: 'Reviewing git configuration', category: 'git' },
+  { label: 'Calculating readiness score', category: 'score' },
+];
+
+/**
+ * Simple analysis progress display using ora spinner
+ */
+export class AnalysisProgress {
+  private spinner: Ora | null = null;
+  private completedSteps: string[] = [];
+  private currentStepIndex: number = -1;
+  private fileCount: number = 0;
+
+  constructor() {}
+
+  /**
+   * Start the progress display
+   */
+  start(fileCount: number = 0): void {
+    this.fileCount = fileCount;
+
+    // Print file count header
+    if (fileCount > 0) {
+      console.log(chalk.dim(`  Found ${fileCount} files to analyze\n`));
+    }
+  }
+
+  /**
+   * Move to next step
+   */
+  async nextStep(): Promise<void> {
+    // Mark current step as done if we have one
+    if (this.currentStepIndex >= 0 && this.currentStepIndex < ANALYSIS_STEPS.length) {
+      const doneStep = ANALYSIS_STEPS[this.currentStepIndex];
+      this.completedSteps.push(doneStep.label);
+
+      // Show completed step
+      if (this.spinner) {
+        this.spinner.stopAndPersist({
+          symbol: chalk.green('✓'),
+          text: chalk.dim(doneStep.label),
+        });
+      }
+    }
+
+    // Move to next step
+    this.currentStepIndex++;
+
+    if (this.currentStepIndex < ANALYSIS_STEPS.length) {
+      const nextStep = ANALYSIS_STEPS[this.currentStepIndex];
+
+      // Start new spinner for this step
+      this.spinner = ora({
+        text: chalk.white(nextStep.label),
+        color: 'magenta',
+        spinner: 'dots',
+      }).start();
+    }
+
+    // Add realistic delay per step (150-350ms)
+    const delay = 150 + Math.random() * 200;
+    await new Promise(resolve => setTimeout(resolve, delay));
+  }
+
+  /**
+   * Complete all remaining steps quickly (for when API returns)
+   */
+  async finishRemaining(): Promise<void> {
+    while (this.currentStepIndex < ANALYSIS_STEPS.length - 1) {
+      await this.nextStep();
+      // Faster completion for remaining steps
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+
+    // Mark last step as done
+    if (this.currentStepIndex >= 0 && this.currentStepIndex < ANALYSIS_STEPS.length) {
+      const lastStep = ANALYSIS_STEPS[this.currentStepIndex];
+      if (this.spinner) {
+        this.spinner.stopAndPersist({
+          symbol: chalk.green('✓'),
+          text: chalk.dim(lastStep.label),
+        });
+        this.spinner = null;
+      }
+    }
+  }
+
+  /**
+   * Stop the progress display
+   */
+  stop(): void {
+    if (this.spinner) {
+      this.spinner.stop();
+      this.spinner = null;
+    }
+  }
+}
+
+/**
+ * Print a quick summary of findings before detailed table
+ */
+export function printSummary(gaps: Gap[]): void {
+  const categories = new Map<string, number>();
+
+  for (const gap of gaps) {
+    categories.set(gap.category, (categories.get(gap.category) || 0) + 1);
+  }
+
+  if (categories.size === 0) return;
+
+  const parts: string[] = [];
+
+  // Order: security first, then alphabetical
+  const orderedCategories = ['security', 'auth', 'testing', 'observability', 'cicd', 'dependencies', 'git', 'errors'];
+
+  for (const cat of orderedCategories) {
+    const count = categories.get(cat);
+    if (count) {
+      const icon = getCategoryIcon(cat);
+      parts.push(`${icon} ${count} ${cat}`);
+    }
+  }
+
+  // Any remaining categories
+  for (const [cat, count] of categories) {
+    if (!orderedCategories.includes(cat)) {
+      parts.push(`${count} ${cat}`);
+    }
+  }
+
+  console.log(chalk.dim('  Found: ') + parts.join(chalk.dim(' · ')));
+  console.log();
+}
+
+/**
+ * Get an icon for a category
+ */
+function getCategoryIcon(category: string): string {
+  const icons: Record<string, string> = {
+    security: '🔒',
+    auth: '🔑',
+    testing: '🧪',
+    observability: '📊',
+    cicd: '🚀',
+    dependencies: '📦',
+    git: '📝',
+    errors: '⚠️',
+  };
+  return icons[category] || '•';
 }

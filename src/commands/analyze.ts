@@ -1,15 +1,17 @@
 import { Command } from 'commander';
-import ora from 'ora';
 import chalk from 'chalk';
+import ora from 'ora';
 import { loadConfig } from '../lib/config.js';
 import { createApiClient } from '../lib/api-client.js';
 import { collectFiles } from '../lib/file-collector.js';
 import {
   printHeader,
   printScore,
+  printClassification,
   formatGaps,
   printFooter,
-  getAnalysisSteps,
+  printSummary,
+  AnalysisProgress,
 } from '../lib/output.js';
 
 /**
@@ -31,7 +33,8 @@ export const analyzeCommand = new Command('analyze')
 
     // For JSON mode, skip all fancy output
     if (options.json) {
-      const spinner = ora('Analyzing...').start();
+      // Use stderr for spinner to keep stdout clean for JSON
+      const spinner = ora({ text: 'Analyzing...', stream: process.stderr }).start();
       try {
         const files = await collectFiles(options.dir);
         const analysis = await api.analyze({
@@ -48,50 +51,61 @@ export const analyzeCommand = new Command('analyze')
     }
 
     // Interactive mode with nice visuals
-    const spinner = ora({
-      text: chalk.cyan('Scanning project files...'),
-      spinner: 'dots12',
-      color: 'magenta',
-    }).start();
+    const progress = new AnalysisProgress();
 
     try {
-      // Step 1: Collect files
-      const files = await collectFiles(options.dir);
-
-      if (options.verbose) {
-        spinner.text = chalk.cyan(`Found ${files.size} files, analyzing...`);
-      }
-
-      // Animated analysis steps
-      const steps = getAnalysisSteps();
-      for (const step of steps) {
-        spinner.text = chalk.cyan(step);
-        await sleep(120);
-      }
-
-      // Call API
-      const analysis = await api.analyze({
-        files: Object.fromEntries(files),
-      });
-
-      // Stop spinner before printing results
-      spinner.stop();
-
-      // Clear line and print everything fresh
-      console.clear();
-
-      // Now print the nice output
+      // Print header first if enabled
       if (options.banner !== false) {
         printHeader();
       }
 
-      console.log(chalk.green('✔ Analysis complete!\n'));
+      // Step 1: Collect files
+      const files = await collectFiles(options.dir);
+
+      // Start progress display with file count
+      progress.start(files.size);
+
+      // Start stepping through the analysis phases
+      // These are "fake" steps that give visual feedback while API processes
+      await progress.nextStep(); // Scanning project structure
+
+      // Call API (this runs while we show progress)
+      const analysisPromise = api.analyze({
+        files: Object.fromEntries(files),
+      });
+
+      // Continue showing progress steps while API works
+      await progress.nextStep(); // Analyzing security
+      await progress.nextStep(); // Checking auth
+      await progress.nextStep(); // Reviewing errors
+      await progress.nextStep(); // Inspecting deps
+
+      // Wait for API response
+      const analysis = await analysisPromise;
+
+      // Quickly finish remaining steps
+      await progress.finishRemaining();
+
+      // Small pause for visual satisfaction
+      await sleep(200);
+
+      // Stop and clear progress display
+      progress.stop();
+
+      // Print success message
+      console.log(chalk.green('✓ Analysis complete!\n'));
 
       // Print score with progress bar
       printScore(analysis.readinessScore);
 
-      // Print gaps grouped by severity
+      // Print classification if available
+      if (analysis.classification) {
+        printClassification(analysis.classification);
+      }
+
+      // Print quick summary of findings by category
       if (analysis.gaps.length > 0) {
+        printSummary(analysis.gaps);
         console.log(formatGaps(analysis.gaps));
       }
 
@@ -99,7 +113,8 @@ export const analyzeCommand = new Command('analyze')
       printFooter(analysis.gaps.length);
 
     } catch (error) {
-      spinner.fail(chalk.red('Analysis failed'));
+      progress.stop();
+      console.log(chalk.red('✗ Analysis failed'));
       console.log();
 
       if (error instanceof Error) {
