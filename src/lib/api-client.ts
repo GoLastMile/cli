@@ -9,24 +9,17 @@ interface Gap {
   category: string;
   filePath?: string;
   line?: number;
+  lineNumber?: number;
   description: string;
+  autoFixable?: boolean;
+  suggestedFix?: string;
 }
 
-interface AnalyzeResponse {
+export interface AnalyzeResponse {
   id: string;
   gaps: Gap[];
-  stack: { framework?: string; language: string; database?: string };
+  stack: { framework?: string; language: string | null; database?: string | null };
   readinessScore: number;
-}
-
-interface Fix {
-  id: string;
-  gapId: string;
-  gapTitle: string;
-  filePath: string;
-  originalContent: string;
-  newContent: string;
-  description: string;
 }
 
 interface Deployment {
@@ -61,12 +54,6 @@ export function createApiClient(config: Config) {
   return {
     async analyze(data: { files: Record<string, string> }): Promise<AnalyzeResponse> {
       return request('/v1/analyze', { method: 'POST', body: JSON.stringify(data) });
-    },
-
-    async generateFixes(data: { analysisId: string; gapIds?: string[] }): Promise<Fix[]> {
-      // For now, return empty array
-      // In production: return request('/v1/fixes', { method: 'POST', body: JSON.stringify(data) });
-      return [];
     },
 
     async deploy(data: { platform: string; token: string; files: Record<string, string> }): Promise<Deployment> {

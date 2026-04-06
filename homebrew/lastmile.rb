@@ -1,19 +1,19 @@
 # typed: false
 # frozen_string_literal: true
 
-# Homebrew formula for LastMile CLI
-# To use this formula, create a tap repo: github.com/golastmile/homebrew-tap
-# Then users can install with: brew install golastmile/tap/lastmile
+# Homebrew formula for LastMile CLI (command: lastmile)
+# Tap repo: github.com/GoLastMile/homebrew-tap with Formula/lastmile.rb (or install from file)
+# brew tap golastmile/tap && brew install lastmile
 
 class Lastmile < Formula
   desc "Ship your vibe-coded projects to production"
-  homepage "https://github.com/golastmile/lastmile"
+  homepage "https://github.com/GoLastMile/cli"
   version "0.1.0"
   license "MIT"
 
   on_macos do
     on_arm do
-      url "https://github.com/golastmile/lastmile/releases/download/v#{version}/lastmile-darwin-arm64"
+      url "https://github.com/GoLastMile/cli/releases/download/v#{version}/lastmile-darwin-arm64"
       sha256 "REPLACE_WITH_SHA256_DARWIN_ARM64"
 
       def install
@@ -22,7 +22,7 @@ class Lastmile < Formula
     end
 
     on_intel do
-      url "https://github.com/golastmile/lastmile/releases/download/v#{version}/lastmile-darwin-x64"
+      url "https://github.com/GoLastMile/cli/releases/download/v#{version}/lastmile-darwin-x64"
       sha256 "REPLACE_WITH_SHA256_DARWIN_X64"
 
       def install
@@ -33,7 +33,7 @@ class Lastmile < Formula
 
   on_linux do
     on_intel do
-      url "https://github.com/golastmile/lastmile/releases/download/v#{version}/lastmile-linux-x64"
+      url "https://github.com/GoLastMile/cli/releases/download/v#{version}/lastmile-linux-x64"
       sha256 "REPLACE_WITH_SHA256_LINUX_X64"
 
       def install

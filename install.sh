@@ -1,10 +1,10 @@
 #!/bin/bash
 set -e
 
-# LastMile CLI installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/golastmile/lastmile/main/cli/install.sh | bash
+# LastMile CLI installer (binary name: lastmile; GitHub org: GoLastMile)
+# Usage: curl -fsSL https://raw.githubusercontent.com/GoLastMile/cli/main/install.sh | bash
 
-REPO="golastmile/lastmile"
+REPO="GoLastMile/cli"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 BINARY_NAME="lastmile"
 

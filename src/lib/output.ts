@@ -65,26 +65,26 @@ function createProgressBar(score: number, width: number = 30): string {
 export function printScore(score: number): void {
   const progressBar = createProgressBar(score);
 
-  let scoreColor: (text: string) => string;
+  let scorePaint: typeof chalk.green.bold;
   let emoji: string;
   let status: string;
 
   if (score >= 80) {
-    scoreColor = chalk.green;
+    scorePaint = chalk.green.bold;
     emoji = '🎉';
     status = 'Production Ready!';
   } else if (score >= 50) {
-    scoreColor = chalk.yellow;
+    scorePaint = chalk.yellow.bold;
     emoji = '🔧';
     status = 'Needs Work';
   } else {
-    scoreColor = chalk.red;
+    scorePaint = chalk.red.bold;
     emoji = '🚨';
     status = 'Not Ready';
   }
 
   const scoreBox = boxen(
-    `${emoji}  Readiness Score: ${scoreColor.bold(`${score}/100`)}  ${chalk.dim(status)}\n\n   ${progressBar}`,
+    `${emoji}  Readiness Score: ${scorePaint(`${score}/100`)}  ${chalk.dim(status)}\n\n   ${progressBar}`,
     {
       padding: { top: 0, bottom: 0, left: 1, right: 1 },
       borderStyle: 'round',
