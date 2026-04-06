@@ -11,6 +11,7 @@ import {
   formatGaps,
   printFooter,
   printSummary,
+  printStats,
   AnalysisProgress,
 } from '../lib/output.js';
 
@@ -26,7 +27,7 @@ export const analyzeCommand = new Command('analyze')
   .option('-d, --dir <path>', 'Directory to analyze', '.')
   .option('--json', 'Output as JSON')
   .option('--no-banner', 'Skip the banner')
-  .option('-v, --verbose', 'Show detailed analysis steps')
+  .option('-v, --verbose', 'Show detailed analysis steps and all info items')
   .action(async (options) => {
     const config = await loadConfig();
     const api = createApiClient(config);
@@ -62,35 +63,32 @@ export const analyzeCommand = new Command('analyze')
       // Step 1: Collect files
       const files = await collectFiles(options.dir);
 
-      // Start progress display with file count
+      // Start progress display with file count (returns start time)
       progress.start(files.size);
 
       // Start stepping through the analysis phases
-      // These are "fake" steps that give visual feedback while API processes
-      await progress.nextStep(); // Scanning project structure
+      await progress.nextPhase(); // Scanning project structure
 
       // Call API (this runs while we show progress)
       const analysisPromise = api.analyze({
         files: Object.fromEntries(files),
       });
 
-      // Continue showing progress steps while API works
-      await progress.nextStep(); // Analyzing security
-      await progress.nextStep(); // Checking auth
-      await progress.nextStep(); // Reviewing errors
-      await progress.nextStep(); // Inspecting deps
+      // Continue showing progress phases while API works
+      await progress.nextPhase(); // Analyzing security & auth
+      await progress.nextPhase(); // Checking code quality
 
       // Wait for API response
       const analysis = await analysisPromise;
 
-      // Quickly finish remaining steps
+      // Quickly finish remaining phases
       await progress.finishRemaining();
 
       // Small pause for visual satisfaction
-      await sleep(200);
+      await sleep(150);
 
-      // Stop and clear progress display
-      progress.stop();
+      // Stop and get duration
+      const durationMs = progress.stop();
 
       // Print success message
       console.log(chalk.green('✓ Analysis complete!\n'));
@@ -103,10 +101,21 @@ export const analyzeCommand = new Command('analyze')
         printClassification(analysis.classification);
       }
 
+      // Calculate stats
+      const fixableCount = analysis.gaps.filter((g: any) => g.autoFixable).length;
+
+      // Print stats summary line
+      printStats({
+        fileCount: files.size,
+        durationMs,
+        gapCount: analysis.gaps.length,
+        fixableCount,
+      });
+
       // Print quick summary of findings by category
       if (analysis.gaps.length > 0) {
         printSummary(analysis.gaps);
-        console.log(formatGaps(analysis.gaps));
+        console.log(formatGaps(analysis.gaps, { verbose: options.verbose }));
       }
 
       // Print footer with next steps
