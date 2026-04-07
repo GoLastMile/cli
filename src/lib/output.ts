@@ -2,11 +2,13 @@ import chalk from 'chalk';
 import boxen from 'boxen';
 import gradient from 'gradient-string';
 import ora, { Ora } from 'ora';
+import type { Gap, Classification } from './types.js';
 
 // Check for NO_COLOR environment variable (accessibility)
 const noColor = process.env.NO_COLOR !== undefined || process.env.TERM === 'dumb';
 
 // Safe chalk wrapper that respects NO_COLOR
+// Note: We use a custom wrapper instead of chalk.level=0 for more granular control
 const c = noColor ? {
   red: (s: string) => s,
   yellow: (s: string) => s,
@@ -23,26 +25,6 @@ const c = noColor ? {
   bgBlue: { white: { bold: (s: string) => s } },
   bgGray: { white: (s: string) => s },
 } : chalk;
-
-interface Gap {
-  id: string;
-  title: string;
-  severity: 'critical' | 'warning' | 'info';
-  category: string;
-  filePath?: string;
-  lineNumber?: number;
-  description: string;
-  suggestedFix?: string;
-  autoFixable?: boolean;
-}
-
-interface Classification {
-  architecture: { type: string; confidence: number };
-  purpose: { type: string; confidence: number };
-  features: string[];
-  confidence: number;
-  signals?: string[];
-}
 
 interface AnalysisStats {
   fileCount: number;

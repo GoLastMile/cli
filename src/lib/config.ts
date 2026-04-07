@@ -23,14 +23,16 @@ export type Config = z.infer<typeof ConfigSchema>;
 export async function loadConfig(): Promise<Config> {
   let config: Config = {};
 
-  // Load global config
+  // Load global config (~/.lastmilerc)
   try {
     const globalPath = join(homedir(), CONFIG_FILENAME);
     const content = await readFile(globalPath, 'utf-8');
     config = ConfigSchema.parse(JSON.parse(content));
-  } catch {}
+  } catch {
+    // File doesn't exist or is invalid - this is expected for new users
+  }
 
-  // Load project config (overrides global)
+  // Load project config (./.lastmilerc) - overrides global
   try {
     const content = await readFile(`./${CONFIG_FILENAME}`, 'utf-8');
     const projectConfig = ConfigSchema.parse(JSON.parse(content));
@@ -40,7 +42,9 @@ export async function loadConfig(): Promise<Config> {
       deployment: { ...config.deployment, ...projectConfig.deployment },
       analysis: { ...config.analysis, ...projectConfig.analysis },
     };
-  } catch {}
+  } catch {
+    // File doesn't exist or is invalid - this is expected
+  }
 
   // Override with environment variables
   if (process.env.LASTMILE_API_KEY) {

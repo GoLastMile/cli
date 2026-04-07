@@ -39,7 +39,7 @@ export const shipCommand = new Command('ship')
     const warningGaps = analysis.gaps.filter(g => g.severity === 'warning');
 
     if (analysis.gaps.length > 0) {
-      console.log(formatGaps(analysis.gaps, 'warning'));
+      console.log(formatGaps(analysis.gaps));
     }
     console.log(chalk.bold(`\nFound ${criticalGaps.length} critical, ${warningGaps.length} warnings\n`));
 

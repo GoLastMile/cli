@@ -40,7 +40,8 @@ const ANALYZABLE_EXTENSIONS = new Set([
   '.md', '.mdx',
   '.html', '.css', '.scss', '.sass',
   '.sql',
-  '.env', '.env.example', '.env.local',
+  '.prisma', // Prisma schema files
+  // Note: .env files are matched in isEnvFile() below since extname('.env') returns ''
 ]);
 
 const ANALYZABLE_FILES = new Set([
@@ -48,7 +49,18 @@ const ANALYZABLE_FILES = new Set([
   'Dockerfile', 'docker-compose.yml',
   'package.json', 'tsconfig.json', 'pyproject.toml',
   'Gemfile', 'Cargo.toml', 'go.mod',
+  '.env', '.env.example', '.env.sample', '.env.template', '.env.local',
+  'app.json', 'app.config.js', 'app.config.ts', 'eas.json', // Expo/React Native
+  'deno.json', 'deno.jsonc', // Deno/Supabase Edge Functions
 ]);
+
+/**
+ * Check if a filename is an env file (handles cases like .env, .env.local, .env.development)
+ * These files don't have proper extensions so extname() doesn't work
+ */
+function isEnvFile(filename: string): boolean {
+  return filename === '.env' || filename.startsWith('.env.');
+}
 
 export async function collectFiles(
   dir: string,
@@ -97,7 +109,9 @@ export async function collectFiles(
         await walk(fullPath);
       } else if (entry.isFile()) {
         const ext = extname(entry.name);
-        const isAnalyzable = ANALYZABLE_EXTENSIONS.has(ext) || ANALYZABLE_FILES.has(entry.name);
+        const isAnalyzable = ANALYZABLE_EXTENSIONS.has(ext) ||
+                             ANALYZABLE_FILES.has(entry.name) ||
+                             isEnvFile(entry.name);
 
         if (!isAnalyzable) continue;
 

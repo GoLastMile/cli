@@ -1,47 +1,38 @@
 import type { Config } from './config.js';
+import type { AnalyzeResponse, Deployment } from './types.js';
+
+// Re-export types for backwards compatibility
+export type { AnalyzeResponse, Deployment, Gap, Stack, Classification } from './types.js';
 
 const DEFAULT_API_URL = 'http://localhost:3001';
-
-interface Gap {
-  id: string;
-  title: string;
-  severity: 'critical' | 'warning' | 'info';
-  category: string;
-  filePath?: string;
-  line?: number;
-  lineNumber?: number;
-  description: string;
-  autoFixable?: boolean;
-  suggestedFix?: string;
-}
-
-export interface AnalyzeResponse {
-  id: string;
-  gaps: Gap[];
-  stack: { framework?: string; language: string | null; database?: string | null };
-  readinessScore: number;
-}
-
-interface Deployment {
-  id: string;
-  status: 'pending' | 'building' | 'success' | 'failed';
-  url?: string;
-  error?: string;
-}
 
 export function createApiClient(config: Config) {
   const baseUrl = process.env.LASTMILE_API_URL || DEFAULT_API_URL;
   const apiKey = config.apiKey;
 
   async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-    const response = await fetch(`${baseUrl}${path}`, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-        ...options.headers,
-      },
-    });
+    let response: Response;
+
+    try {
+      response = await fetch(`${baseUrl}${path}`, {
+        ...options,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+          ...options.headers,
+        },
+      });
+    } catch (err) {
+      // Handle network errors (server not running, connection refused, etc.)
+      const error = err as Error & { cause?: { code?: string } };
+      if (error.cause?.code === 'ECONNREFUSED') {
+        throw new Error(
+          `Cannot connect to LastMile API at ${baseUrl}\n` +
+          `Make sure the backend server is running: cd backend && pnpm dev`
+        );
+      }
+      throw new Error(`Network error: ${error.message}`);
+    }
 
     if (!response.ok) {
       const error = await response.json().catch(() => ({ message: 'Unknown error' }));
@@ -57,8 +48,9 @@ export function createApiClient(config: Config) {
     },
 
     async deploy(data: { platform: string; token: string; files: Record<string, string> }): Promise<Deployment> {
-      // For now, return mock data
-      // In production: return request('/v1/deploy', { method: 'POST', body: JSON.stringify(data) });
+      // TODO: Implement real deployment API
+      // return request('/v1/deploy', { method: 'POST', body: JSON.stringify(data) });
+      void data; // Suppress unused parameter warning
       return {
         id: crypto.randomUUID(),
         status: 'success',
@@ -67,8 +59,8 @@ export function createApiClient(config: Config) {
     },
 
     async getDeployment(id: string): Promise<Deployment> {
-      // For now, return mock data
-      // In production: return request(`/v1/deployments/${id}`);
+      // TODO: Implement real deployment status API
+      // return request(`/v1/deployments/${id}`);
       return {
         id,
         status: 'success',
