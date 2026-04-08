@@ -214,34 +214,48 @@ export const analyzeCommand = new Command('analyze')
         const notes: string[] = [];
 
         // Try backend fix generation (stateless - no DB required)
+        // Process gaps in batches of 3 to avoid socket timeouts
+        const BATCH_SIZE = 3;
+        const gapBatches: any[][] = [];
+        for (let i = 0; i < autoFixableGaps.length; i += BATCH_SIZE) {
+          gapBatches.push(autoFixableGaps.slice(i, i + BATCH_SIZE));
+        }
+
         try {
-          const result = await api.generateStatelessFixes({
-            gaps: autoFixableGaps.map((g: any) => ({
-              id: g.id,
-              category: g.category,
-              severity: g.severity,
-              title: g.title,
-              description: g.description || '',
-              filePath: g.filePath,
-              lineNumber: g.lineNumber || g.line,
-              autoFixable: g.autoFixable ?? true,
-              suggestedFix: g.suggestedFix,
-            })),
-            stack: {
-              language: analysis.stack.language,
-              framework: analysis.stack.framework || null,
-              database: analysis.stack.database || null,
-              orm: analysis.stack.orm || null,
-            },
-            files: Object.fromEntries(files),
-          });
+          for (let i = 0; i < gapBatches.length; i++) {
+            const batch = gapBatches[i];
+            if (process.env.DEBUG) {
+              console.log(`Processing batch ${i + 1}/${gapBatches.length} (${batch.length} gaps)`);
+            }
 
-          backendFixes = result.fixes;
+            const result = await api.generateStatelessFixes({
+              gaps: batch.map((g: any) => ({
+                id: g.id,
+                category: g.category,
+                severity: g.severity,
+                title: g.title,
+                description: g.description || '',
+                filePath: g.filePath,
+                lineNumber: g.lineNumber || g.line,
+                autoFixable: g.autoFixable ?? true,
+                suggestedFix: g.suggestedFix,
+              })),
+              stack: {
+                language: analysis.stack.language,
+                framework: analysis.stack.framework || null,
+                database: analysis.stack.database || null,
+                orm: analysis.stack.orm || null,
+              },
+              files: Object.fromEntries(files),
+            });
 
-          for (const fix of backendFixes) {
-            installCommands.push(...fix.installCommands);
-            if (fix.notes) {
-              notes.push(...fix.notes);
+            backendFixes.push(...result.fixes);
+
+            for (const fix of result.fixes) {
+              installCommands.push(...fix.installCommands);
+              if (fix.notes) {
+                notes.push(...fix.notes);
+              }
             }
           }
 
