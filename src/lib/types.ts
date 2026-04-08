@@ -59,3 +59,33 @@ export interface AnalyzeResponse {
   readinessScore: number;
   classification?: Classification;
 }
+
+/**
+ * A file change in a generated fix
+ */
+export interface FileChange {
+  filePath: string;
+  originalContent: string;
+  newContent: string;
+  operation: 'create' | 'modify' | 'append';
+  description: string;
+}
+
+/**
+ * Risk level of a fix
+ */
+export type FixRisk = 'safe' | 'review' | 'careful';
+
+/**
+ * Generated fix from the backend
+ */
+export interface GeneratedFix {
+  gapId: string;
+  strategy: 'template' | 'transform' | 'llm';
+  risk: FixRisk;
+  canAutoApply: boolean;
+  changes: FileChange[];
+  installCommands: string[];
+  summary: string;
+  notes?: string[];
+}

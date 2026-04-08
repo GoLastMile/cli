@@ -7,3 +7,8 @@ releases/
 .DS_Store
 *.bun-build
 CLAUDE.md
+# Added by LastMile
+.env
+.env.local
+build
+.turbo
