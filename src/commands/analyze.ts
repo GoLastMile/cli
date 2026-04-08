@@ -81,23 +81,27 @@ async function applyFixes(fixes: LocalFix[]): Promise<void> {
 
 export const analyzeCommand = new Command('analyze')
   .description('Analyze your project for production gaps')
-  .option('-d, --dir <path>', 'Directory to analyze', '.')
+  .argument('[path]', 'Directory to analyze', '.')
+  .option('-d, --dir <path>', 'Directory to analyze (alternative to positional argument)')
   .option('--json', 'Output as JSON')
   .option('--no-banner', 'Skip the banner')
   .option('-v, --verbose', 'Show detailed analysis steps and all info items')
   .option('--fix', 'Automatically fix all issues without prompting')
   .option('--no-fix', 'Skip fix prompt after analysis')
-  .action(async (options) => {
+  .option('--yes', 'Auto-apply safe fixes without confirmation (use with --fix)')
+  .action(async (pathArg, options) => {
     const config = await loadConfig();
     const api = createApiClient(config);
-    const projectRoot = resolve(process.cwd(), options.dir);
+    // Support both positional argument and -d option (positional takes precedence)
+    const targetDir = pathArg !== '.' ? pathArg : (options.dir || '.');
+    const projectRoot = resolve(process.cwd(), targetDir);
 
     // For JSON mode, skip all fancy output
     if (options.json) {
       // Use stderr for spinner to keep stdout clean for JSON
       const spinner = ora({ text: 'Analyzing...', stream: process.stderr }).start();
       try {
-        const files = await collectFiles(options.dir);
+        const files = await collectFiles(targetDir);
         const analysis = await api.analyze({
           files: Object.fromEntries(files),
         });
@@ -121,7 +125,7 @@ export const analyzeCommand = new Command('analyze')
       }
 
       // Step 1: Collect files
-      const files = await collectFiles(options.dir);
+      const files = await collectFiles(targetDir);
 
       // Start progress display with file count (returns start time)
       progress.start(files.size);
@@ -310,7 +314,7 @@ export const analyzeCommand = new Command('analyze')
         // Track what we'll apply
         const fixesToApply: LocalFixWithRisk[] = [];
 
-        // Safe fixes - auto-apply
+        // Safe fixes - auto-apply (no prompt needed)
         if (safeFixes.length > 0) {
           console.log(chalk.green(`\n✓ Applying ${safeFixes.length} safe fix(es)...`));
           for (const fix of safeFixes) {
@@ -319,7 +323,7 @@ export const analyzeCommand = new Command('analyze')
           fixesToApply.push(...safeFixes);
         }
 
-        // Review fixes - show diff and ask
+        // Review fixes - show diff and ask (skip if --yes)
         if (reviewFixes.length > 0) {
           console.log(chalk.yellow(`\n⚠ ${reviewFixes.length} fix(es) need review:\n`));
           for (const fix of reviewFixes) {
@@ -329,16 +333,21 @@ export const analyzeCommand = new Command('analyze')
             console.log();
           }
 
-          const applyReview = await confirm({
-            message: `Apply these ${reviewFixes.length} fix(es)?`,
-            default: true,
-          });
-          if (applyReview) {
-            fixesToApply.push(...reviewFixes);
+          if (options.yes) {
+            // Skip review fixes in --yes mode (only safe fixes are auto-applied)
+            console.log(chalk.dim(`(Skipping ${reviewFixes.length} review fix(es) in --yes mode)`));
+          } else {
+            const applyReview = await confirm({
+              message: `Apply these ${reviewFixes.length} fix(es)?`,
+              default: true,
+            });
+            if (applyReview) {
+              fixesToApply.push(...reviewFixes);
+            }
           }
         }
 
-        // Careful fixes - show warning and ask
+        // Careful fixes - show warning and ask (skip if --yes)
         if (carefulFixes.length > 0) {
           console.log(chalk.red.bold('\n⚠️  Security-Sensitive Fixes'));
           console.log(chalk.red('These affect auth, security, or data access. Review carefully.\n'));
@@ -350,12 +359,17 @@ export const analyzeCommand = new Command('analyze')
             console.log();
           }
 
-          const applyCareful = await confirm({
-            message: `Apply these ${carefulFixes.length} security-sensitive fix(es)?`,
-            default: false,
-          });
-          if (applyCareful) {
-            fixesToApply.push(...carefulFixes);
+          if (options.yes) {
+            // Skip careful fixes in --yes mode (security-sensitive)
+            console.log(chalk.dim(`(Skipping ${carefulFixes.length} security-sensitive fix(es) in --yes mode)`));
+          } else {
+            const applyCareful = await confirm({
+              message: `Apply these ${carefulFixes.length} security-sensitive fix(es)?`,
+              default: false,
+            });
+            if (applyCareful) {
+              fixesToApply.push(...carefulFixes);
+            }
           }
         }
 

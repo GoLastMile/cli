@@ -68,14 +68,17 @@ async function applyBackendFixes(fixes: LocalFix[]): Promise<void> {
 
 export const fixCommand = new Command('fix')
   .description('Generate and apply fixes for detected gaps')
-  .option('-d, --dir <path>', 'Project directory', '.')
+  .argument('[path]', 'Project directory', '.')
+  .option('-d, --dir <path>', 'Project directory (alternative to positional argument)')
   .option('--apply', 'Apply fixes directly to files')
   .option('--yes', 'Skip confirmation prompts')
   .option('--local-only', 'Only use local fix engine (skip backend)')
-  .action(async (options) => {
+  .action(async (pathArg, options) => {
     const config = await loadConfig();
     const api = createApiClient(config);
-    const projectRoot = resolve(process.cwd(), options.dir);
+    // Support both positional argument and -d option (positional takes precedence)
+    const targetDir = pathArg !== '.' ? pathArg : (options.dir || '.');
+    const projectRoot = resolve(process.cwd(), targetDir);
 
     const spinner = ora('Analyzing project for fixable gaps...').start();
 
