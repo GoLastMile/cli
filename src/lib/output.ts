@@ -260,8 +260,7 @@ export function printClassification(classification: Classification): void {
 /**
  * Format gaps in a clean list format (replaces table)
  */
-export function formatGaps(gaps: Gap[], options: { verbose?: boolean } = {}): string {
-  const severityOrder: Record<string, number> = { critical: 0, warning: 1, info: 2 };
+export function formatGaps(gaps: Gap[]): string {
   const termWidth = getTerminalWidth();
 
   // Group by severity
@@ -277,20 +276,8 @@ export function formatGaps(gaps: Gap[], options: { verbose?: boolean } = {}): st
   if (warnings.length > 0) {
     sections.push(formatGapSection(warnings, 'warning', termWidth));
   }
-
-  // INFO items: show count only unless verbose
   if (info.length > 0) {
-    if (options.verbose) {
-      sections.push(formatGapSection(info, 'info', termWidth));
-    } else {
-      const infoLabel = noColor
-        ? `[INFO] ${info.length} suggestions`
-        : chalk.bgBlue.white.bold(' INFO ') + ' ' + chalk.white.bold(info.length.toString()) + chalk.dim(' suggestions');
-      const hint = noColor
-        ? '  Run with --verbose to see details'
-        : chalk.dim('  Run with --verbose to see details');
-      sections.push(`${infoLabel}\n${hint}`);
-    }
+    sections.push(formatGapSection(info, 'info', termWidth));
   }
 
   return sections.join('\n\n');

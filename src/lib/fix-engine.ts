@@ -9,6 +9,7 @@ export interface LocalFix {
   originalContent: string;
   newContent: string;
   description: string;
+  operation?: 'create' | 'modify' | 'append' | 'delete';
 }
 
 type Stack = AnalyzeResponse['stack'];

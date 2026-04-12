@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import { resolve, dirname } from 'path';
-import { writeFile, mkdir } from 'fs/promises';
+import { writeFile, mkdir, unlink, access } from 'fs/promises';
+import { spawn } from 'child_process';
 import chalk from 'chalk';
 import ora from 'ora';
 import { confirm } from '@inquirer/prompts';
@@ -21,6 +22,43 @@ import { buildLocalFixes, type LocalFix } from '../lib/fix-engine.js';
 import type { FixRisk } from '../lib/types.js';
 
 /**
+ * Get the install command for a package manager
+ */
+function getInstallCommand(packageManager: string | null | undefined): { cmd: string; devFlag: string } {
+  switch (packageManager?.toLowerCase()) {
+    case 'pnpm':
+      return { cmd: 'pnpm', devFlag: '-D' };
+    case 'yarn':
+      return { cmd: 'yarn', devFlag: '--dev' };
+    case 'bun':
+      return { cmd: 'bun', devFlag: '-d' };
+    case 'pip':
+    case 'poetry':
+      return { cmd: packageManager, devFlag: '--dev' };
+    case 'npm':
+    default:
+      return { cmd: 'npm', devFlag: '--save-dev' };
+  }
+}
+
+/**
+ * Run a shell command and return a promise
+ */
+function runCommand(command: string, args: string[], cwd: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(command, args, { cwd, stdio: 'inherit', shell: true });
+    proc.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`Command failed with code ${code}`));
+      }
+    });
+    proc.on('error', reject);
+  });
+}
+
+/**
  * Sleep for a given number of milliseconds
  */
 function sleep(ms: number): Promise<void> {
@@ -33,6 +71,7 @@ function sleep(ms: number): Promise<void> {
 interface LocalFixWithRisk extends LocalFix {
   risk: FixRisk;
   canAutoApply: boolean;
+  operation?: 'create' | 'modify' | 'append' | 'delete';
 }
 
 /**
@@ -59,6 +98,7 @@ function convertToLocalFixes(
         originalContent: change.originalContent,
         newContent: change.newContent,
         description: change.description,
+        operation: change.operation,
         risk: fix.risk || 'review',
         canAutoApply: fix.canAutoApply ?? false,
       });
@@ -69,14 +109,30 @@ function convertToLocalFixes(
 }
 
 /**
- * Apply fixes by writing files to disk
+ * Apply fixes by writing or deleting files on disk
  */
-async function applyFixes(fixes: LocalFix[]): Promise<void> {
+async function applyFixes(fixes: LocalFix[], projectRoot: string): Promise<{ deleted: string[] }> {
+  const deleted: string[] = [];
+
   for (const fix of fixes) {
-    const dir = dirname(fix.filePath);
-    await mkdir(dir, { recursive: true });
-    await writeFile(fix.filePath, fix.newContent, 'utf-8');
+    if (fix.operation === 'delete') {
+      // Delete the file
+      try {
+        await access(fix.filePath);
+        await unlink(fix.filePath);
+        deleted.push(fix.filePath.replace(projectRoot + '/', ''));
+      } catch {
+        // File doesn't exist, that's fine
+      }
+    } else {
+      // Create or modify
+      const dir = dirname(fix.filePath);
+      await mkdir(dir, { recursive: true });
+      await writeFile(fix.filePath, fix.newContent, 'utf-8');
+    }
   }
+
+  return { deleted };
 }
 
 export const analyzeCommand = new Command('analyze')
@@ -89,6 +145,7 @@ export const analyzeCommand = new Command('analyze')
   .option('--fix', 'Automatically fix all issues without prompting')
   .option('--no-fix', 'Skip fix prompt after analysis')
   .option('--yes', 'Auto-apply safe fixes without confirmation (use with --fix)')
+  .option('--no-orchestration', 'Use legacy single-pass fix generation instead of multi-agent orchestration')
   .action(async (pathArg, options) => {
     const config = await loadConfig();
     const api = createApiClient(config);
@@ -179,7 +236,7 @@ export const analyzeCommand = new Command('analyze')
       // Print quick summary of findings by category
       if (analysis.gaps.length > 0) {
         printSummary(analysis.gaps);
-        console.log(formatGaps(analysis.gaps, { verbose: options.verbose }));
+        console.log(formatGaps(analysis.gaps));
       }
 
       // Check for fixable gaps
@@ -217,23 +274,18 @@ export const analyzeCommand = new Command('analyze')
         const installCommands: string[] = [];
         const notes: string[] = [];
 
-        // Try backend fix generation (stateless - no DB required)
-        // Process gaps in batches of 3 to avoid socket timeouts
-        const BATCH_SIZE = 3;
-        const gapBatches: any[][] = [];
-        for (let i = 0; i < autoFixableGaps.length; i += BATCH_SIZE) {
-          gapBatches.push(autoFixableGaps.slice(i, i + BATCH_SIZE));
-        }
+        // Try backend fix generation
+        const useOrchestration = options.orchestration !== false;
 
         try {
-          for (let i = 0; i < gapBatches.length; i++) {
-            const batch = gapBatches[i];
+          if (useOrchestration) {
+            // Use multi-agent orchestration (recommended)
             if (process.env.DEBUG) {
-              console.log(`Processing batch ${i + 1}/${gapBatches.length} (${batch.length} gaps)`);
+              console.log('Using orchestrated fix generation...');
             }
 
-            const result = await api.generateStatelessFixes({
-              gaps: batch.map((g: any) => ({
+            const result = await api.generateOrchestratedFixes({
+              gaps: autoFixableGaps.map((g: any) => ({
                 id: g.id,
                 category: g.category,
                 severity: g.severity,
@@ -259,6 +311,59 @@ export const analyzeCommand = new Command('analyze')
               installCommands.push(...fix.installCommands);
               if (fix.notes) {
                 notes.push(...fix.notes);
+              }
+            }
+
+            // Show orchestration info in verbose mode
+            if (options.verbose && result.orchestration) {
+              console.log(chalk.dim(`\nOrchestration: ${result.orchestration.status}`));
+              console.log(chalk.dim(`  ${result.orchestration.summary}`));
+              if (result.orchestration.validation) {
+                console.log(chalk.dim(`  Validation: ${result.orchestration.validation.resolvedCount} resolved, ${result.orchestration.validation.unresolvedCount} unresolved`));
+              }
+            }
+          } else {
+            // Legacy: process gaps in batches
+            const BATCH_SIZE = 3;
+            const gapBatches: any[][] = [];
+            for (let i = 0; i < autoFixableGaps.length; i += BATCH_SIZE) {
+              gapBatches.push(autoFixableGaps.slice(i, i + BATCH_SIZE));
+            }
+
+            for (let i = 0; i < gapBatches.length; i++) {
+              const batch = gapBatches[i];
+              if (process.env.DEBUG) {
+                console.log(`Processing batch ${i + 1}/${gapBatches.length} (${batch.length} gaps)`);
+              }
+
+              const result = await api.generateStatelessFixes({
+                gaps: batch.map((g: any) => ({
+                  id: g.id,
+                  category: g.category,
+                  severity: g.severity,
+                  title: g.title,
+                  description: g.description || '',
+                  filePath: g.filePath,
+                  lineNumber: g.lineNumber || g.line,
+                  autoFixable: g.autoFixable ?? true,
+                  suggestedFix: g.suggestedFix,
+                })),
+                stack: {
+                  language: analysis.stack.language,
+                  framework: analysis.stack.framework || null,
+                  database: analysis.stack.database || null,
+                  orm: analysis.stack.orm || null,
+                },
+                files: Object.fromEntries(files),
+              });
+
+              backendFixes.push(...result.fixes);
+
+              for (const fix of result.fixes) {
+                installCommands.push(...fix.installCommands);
+                if (fix.notes) {
+                  notes.push(...fix.notes);
+                }
               }
             }
           }
@@ -318,7 +423,12 @@ export const analyzeCommand = new Command('analyze')
         if (safeFixes.length > 0) {
           console.log(chalk.green(`\n✓ Applying ${safeFixes.length} safe fix(es)...`));
           for (const fix of safeFixes) {
-            console.log(chalk.green(`  + ${fix.filePath.replace(projectRoot + '/', '')}`));
+            const relativePath = fix.filePath.replace(projectRoot + '/', '');
+            if (fix.operation === 'delete') {
+              console.log(chalk.red(`  - ${relativePath} (deleted)`));
+            } else {
+              console.log(chalk.green(`  + ${relativePath}`));
+            }
           }
           fixesToApply.push(...safeFixes);
         }
@@ -375,15 +485,37 @@ export const analyzeCommand = new Command('analyze')
 
         // Apply the fixes
         if (fixesToApply.length > 0) {
-          await applyFixes(fixesToApply);
-          console.log(chalk.green(`\n✓ Applied ${fixesToApply.length} fix(es)!`));
+          const { deleted } = await applyFixes(fixesToApply, projectRoot);
+          const writtenCount = fixesToApply.length - deleted.length;
+          if (deleted.length > 0) {
+            console.log(chalk.green(`\n✓ Applied ${writtenCount} fix(es), deleted ${deleted.length} file(s)!`));
+          } else {
+            console.log(chalk.green(`\n✓ Applied ${fixesToApply.length} fix(es)!`));
+          }
 
-          // Show install commands
-          const uniqueInstallCommands = [...new Set(installCommands)];
-          if (uniqueInstallCommands.length > 0) {
-            console.log(chalk.yellow('\nRun these commands to install dependencies:'));
-            for (const cmd of uniqueInstallCommands) {
-              console.log(chalk.cyan(`  ${cmd}`));
+          // Auto-install dependencies
+          const uniqueDeps = [...new Set(installCommands)];
+          if (uniqueDeps.length > 0) {
+            const { cmd, devFlag } = getInstallCommand(analysis.stack.packageManager);
+            const installArgs = cmd === 'npm'
+              ? ['install', devFlag, ...uniqueDeps]
+              : cmd === 'yarn'
+              ? ['add', devFlag, ...uniqueDeps]
+              : cmd === 'pnpm'
+              ? ['add', devFlag, ...uniqueDeps]
+              : cmd === 'bun'
+              ? ['add', devFlag, ...uniqueDeps]
+              : ['install', ...uniqueDeps]; // pip/poetry fallback
+
+            const fullCommand = `${cmd} ${installArgs.join(' ')}`;
+            console.log(chalk.cyan(`\nInstalling dependencies: ${fullCommand}`));
+
+            try {
+              await runCommand(cmd, installArgs, projectRoot);
+              console.log(chalk.green('✓ Dependencies installed successfully!'));
+            } catch (installError) {
+              console.log(chalk.yellow(`\nFailed to auto-install. Run manually:`));
+              console.log(chalk.cyan(`  ${fullCommand}`));
             }
           }
 

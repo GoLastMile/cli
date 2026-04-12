@@ -37,6 +37,7 @@ export interface Stack {
   language: string | null;
   database?: string | null;
   orm?: string | null;
+  packageManager?: string | null;
 }
 
 /**
@@ -67,7 +68,7 @@ export interface FileChange {
   filePath: string;
   originalContent: string;
   newContent: string;
-  operation: 'create' | 'modify' | 'append';
+  operation: 'create' | 'modify' | 'append' | 'delete';
   description: string;
 }
 

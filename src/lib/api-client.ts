@@ -120,6 +120,72 @@ export function createApiClient(config: Config) {
     },
 
     /**
+     * Generate fixes using the multi-agent orchestration system (recommended)
+     *
+     * This method uses the new orchestration system which:
+     * - Groups related fixes together
+     * - Handles dependencies between fixes
+     * - Properly deletes duplicate files
+     * - Uses specialized agents for different fix types
+     * - Validates fixes after generation
+     */
+    async generateOrchestratedFixes(data: {
+      gaps: Array<{
+        id: string;
+        category: string;
+        severity: 'critical' | 'warning' | 'info';
+        title: string;
+        description?: string;
+        filePath?: string;
+        lineNumber?: number;
+        autoFixable: boolean;
+        suggestedFix?: string;
+      }>;
+      stack: {
+        language: string | null;
+        framework: string | null;
+        database: string | null;
+        orm?: string | null;
+        buildTool?: string | null;
+        packageManager?: string | null;
+      };
+      files: Record<string, string>;
+    }): Promise<{
+      totalGaps: number;
+      fixesGenerated: number;
+      fixes: GeneratedFix[];
+      skipped: Array<{ gapId: string; reason: string }>;
+      usedOrchestration: boolean;
+      fallbackReason?: string;
+      orchestration?: {
+        status: 'SUCCESS' | 'PARTIAL' | 'FAILED';
+        summary: string;
+        plan: {
+          fixSetsCount: number;
+          batchesCount: number;
+          warnings: string[];
+          estimatedCost: {
+            inputTokens: number;
+            outputTokens: number;
+            estimatedCostUsd: number;
+            llmCalls: number;
+          };
+        };
+        validation: {
+          resolvedCount: number;
+          unresolvedCount: number;
+          regressionsCount: number;
+          recommendation: 'COMPLETE' | 'RETRY_PARTIAL' | 'MANUAL_REVIEW';
+        } | null;
+        fileOperations: Array<{ type: string; path: string }>;
+      };
+    }> {
+      // Orchestration can take longer due to multiple specialist agents
+      const FIFTEEN_MINUTES = 15 * 60 * 1000;
+      return request('/v1/fixes/generate-orchestrated', { method: 'POST', body: JSON.stringify(data) }, FIFTEEN_MINUTES);
+    },
+
+    /**
      * Get supported fix categories
      */
     async getSupportedFixCategories(): Promise<{ categories: string[] }> {
