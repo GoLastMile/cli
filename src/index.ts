@@ -4,6 +4,8 @@ import { analyzeCommand } from './commands/analyze.js';
 import { fixCommand } from './commands/fix.js';
 import { deployCommand } from './commands/deploy.js';
 import { shipCommand } from './commands/ship.js';
+import { loginCommand } from './commands/login.js';
+import { logoutCommand } from './commands/logout.js';
 
 const program = new Command();
 
@@ -12,6 +14,8 @@ program
   .description('Ship your vibe-coded projects to production')
   .version('0.1.0');
 
+program.addCommand(loginCommand);
+program.addCommand(logoutCommand);
 program.addCommand(initCommand);
 program.addCommand(analyzeCommand);
 program.addCommand(fixCommand);

@@ -212,5 +212,199 @@ export function createApiClient(config: Config) {
         url: 'https://your-app.railway.app',
       };
     },
+
+    // =========================================================================
+    // LastMile Cloud (Managed Hosting)
+    // =========================================================================
+
+    /**
+     * Check if LastMile Cloud is configured on the backend
+     */
+    async getCloudStatus(): Promise<{
+      configured: boolean;
+      services: { railway: boolean; cloudflare: boolean };
+    }> {
+      return request('/v1/cloud/status');
+    },
+
+    /**
+     * Deploy to LastMile Cloud
+     * No user tokens required - uses LastMile's infrastructure
+     */
+    async deployToCloud(data: {
+      projectName: string;
+      repoUrl: string;
+      branch?: string;
+      envVars?: Record<string, string>;
+      withDatabase?: boolean;
+      rootDirectory?: string;
+      framework?: string;
+    }): Promise<{
+      id: string;
+      status: string;
+      url: string;
+      subdomain: string;
+      databaseUrl?: string;
+      error?: string;
+    }> {
+      // Cloud deployments can take a while
+      const FIVE_MINUTES = 5 * 60 * 1000;
+      return request('/v1/cloud/deploy', { method: 'POST', body: JSON.stringify(data) }, FIVE_MINUTES);
+    },
+
+    /**
+     * Get a LastMile Cloud deployment status
+     */
+    async getCloudDeployment(id: string): Promise<{
+      id: string;
+      status: string;
+      url: string;
+      subdomain: string;
+      databaseUrl?: string;
+      railwayProjectId?: string;
+      createdAt: string;
+      updatedAt: string;
+      error?: string;
+    }> {
+      return request(`/v1/cloud/deploy/${id}`);
+    },
+
+    /**
+     * List user's LastMile Cloud deployments
+     */
+    async listCloudDeployments(): Promise<{
+      deployments: Array<{
+        id: string;
+        projectName: string;
+        status: string;
+        url: string;
+        subdomain: string;
+        createdAt: string;
+      }>;
+    }> {
+      return request('/v1/cloud/deployments');
+    },
+
+    /**
+     * Delete a LastMile Cloud deployment
+     */
+    async deleteCloudDeployment(id: string): Promise<{ success: boolean }> {
+      return request(`/v1/cloud/deploy/${id}`, { method: 'DELETE' });
+    },
+
+    /**
+     * Redeploy a LastMile Cloud deployment
+     */
+    async redeployCloud(id: string): Promise<{
+      id: string;
+      status: string;
+      url: string;
+    }> {
+      return request(`/v1/cloud/deploy/${id}/redeploy`, { method: 'POST' });
+    },
+
+    /**
+     * Stream deployment logs via SSE
+     * Returns an async iterator of deployment events
+     */
+    async *streamDeploymentLogs(id: string): AsyncGenerator<{
+      type: 'status' | 'log' | 'complete' | 'error';
+      status?: string;
+      logs?: string[];
+      message?: string;
+      error?: string;
+    }> {
+      const url = `${baseUrl}/v1/cloud/deploy/${id}/logs`;
+
+      const response = await fetch(url, {
+        headers: {
+          'Accept': 'text/event-stream',
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ message: 'Unknown error' }));
+        throw new Error(error.message || `HTTP ${response.status}`);
+      }
+
+      // Check if it's a JSON response (deployment already complete)
+      const contentType = response.headers.get('content-type');
+      if (contentType?.includes('application/json')) {
+        const data = await response.json();
+        yield {
+          type: 'complete',
+          status: data.status,
+          logs: data.logs,
+          message: 'Deployment complete',
+        };
+        return;
+      }
+
+      // Parse SSE stream
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error('No response body');
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('data:')) {
+            const data = line.slice(5).trim();
+            if (data) {
+              try {
+                const event = JSON.parse(data);
+                yield event;
+
+                if (event.type === 'complete' || event.type === 'error') {
+                  return;
+                }
+              } catch {
+                // Skip malformed JSON
+              }
+            }
+          }
+        }
+      }
+    },
+
+    /**
+     * Get deployment logs (non-streaming)
+     */
+    async getDeploymentLogs(id: string): Promise<{
+      deploymentId: string;
+      status: string;
+      logs: string[];
+      logCount: number;
+    }> {
+      return request(`/v1/cloud/deploy/${id}/logs/all`);
+    },
+
+    // =========================================================================
+    // Auth
+    // =========================================================================
+
+    /**
+     * Get current authenticated user
+     */
+    async getMe(): Promise<{
+      user: {
+        id: string;
+        email: string;
+        name?: string;
+      };
+    }> {
+      return request('/v1/auth/me');
+    },
   };
 }
