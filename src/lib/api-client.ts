@@ -239,12 +239,17 @@ export function createApiClient(config: Config) {
       withDatabase?: boolean;
       rootDirectory?: string;
       framework?: string;
+      orm?: string;
+      migrateCommand?: string;
     }): Promise<{
       id: string;
       status: string;
       url: string;
       subdomain: string;
       databaseUrl?: string;
+      projectId?: string;
+      serviceId?: string;
+      environmentId?: string;
       error?: string;
     }> {
       // Cloud deployments can take a while

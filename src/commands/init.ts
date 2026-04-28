@@ -10,11 +10,19 @@ import { createApiClient } from '../lib/api-client.js';
 const LASTMILE_DIR = '.lastmile';
 const PROJECT_FILE = 'project.json';
 
-interface ProjectConfig {
+export interface ProjectConfig {
   projectId: string;
   name: string;
   createdAt: string;
   repoUrl?: string;
+  deploy?: {
+    platform: 'railway';
+    railwayProjectId?: string;
+    railwayServiceId?: string;
+    railwayEnvironmentId?: string;
+    databaseId?: string;
+    url?: string;
+  };
 }
 
 async function getGitRemoteUrl(): Promise<string | null> {
@@ -53,6 +61,17 @@ export async function loadProjectConfig(): Promise<ProjectConfig | null> {
   } catch {
     return null;
   }
+}
+
+export async function saveProjectConfig(config: ProjectConfig): Promise<void> {
+  const lastmileDir = LASTMILE_DIR;
+  if (!(await fileExists(lastmileDir))) {
+    await mkdir(lastmileDir, { recursive: true });
+  }
+  await writeFile(
+    join(lastmileDir, PROJECT_FILE),
+    JSON.stringify(config, null, 2) + '\n'
+  );
 }
 
 export const initCommand = new Command('init')

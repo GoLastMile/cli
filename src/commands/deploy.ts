@@ -8,6 +8,7 @@ import fs from 'fs';
 import { loadConfig } from '../lib/config.js';
 import { createApiClient } from '../lib/api-client.js';
 import { getAuthToken, isLoggedIn } from '../lib/auth.js';
+import { loadProjectConfig, saveProjectConfig } from './init.js';
 
 export const deployCommand = new Command('deploy')
   .description('Deploy your project to LastMile Cloud')
@@ -180,14 +181,27 @@ export const deployCommand = new Command('deploy')
     }
 
     // Detect if database is needed
+    const dbInfo = detectDatabaseInfo(projectDir);
     let withDatabase = options.withDatabase;
-    if (withDatabase === undefined) {
-      withDatabase = detectDatabaseUsage(projectDir);
-      if (withDatabase && !options.yes) {
+
+    if (dbInfo.detected) {
+      console.log(chalk.dim(`\nDetected: ${dbInfo.orm || 'Database'} + ${dbInfo.hasMigrations ? 'migrations' : 'no migrations'}`));
+
+      if (withDatabase === undefined && !options.yes) {
         withDatabase = await confirm({
-          message: 'Database detected. Provision Postgres?',
+          message: 'Create database and run migrations on Railway?',
           default: true,
         });
+      } else if (withDatabase === undefined) {
+        withDatabase = true;
+      }
+
+      // V1: If they say no to database, we can't deploy
+      if (!withDatabase) {
+        console.log(chalk.yellow('\nCannot deploy without database setup.'));
+        console.log(chalk.dim('LastMile manages your infrastructure on Railway.'));
+        console.log(chalk.dim('Run `lastmile deploy` again when ready.\n'));
+        return;
       }
     }
 
@@ -199,7 +213,15 @@ export const deployCommand = new Command('deploy')
     if (rootDirectory) {
       console.log(`   Root:     ${rootDirectory}`);
     }
-    console.log(`   Database: ${withDatabase ? 'Yes (Postgres)' : 'No'}`);
+    if (dbInfo.detected) {
+      console.log(`   Database: Postgres (managed by LastMile)`);
+      if (dbInfo.orm) {
+        console.log(`   ORM:      ${dbInfo.orm}`);
+      }
+      if (dbInfo.hasMigrations) {
+        console.log(`   Migrations: Will run automatically`);
+      }
+    }
     console.log();
 
     const shouldDeploy = options.yes || await confirm({
@@ -222,6 +244,8 @@ export const deployCommand = new Command('deploy')
         branch: options.branch,
         withDatabase,
         rootDirectory,
+        orm: dbInfo.orm,
+        migrateCommand: dbInfo.migrateCommand,
       });
 
       if (deployment.error || deployment.status === 'failed') {
@@ -284,6 +308,19 @@ export const deployCommand = new Command('deploy')
 
       // Get final deployment status
       const finalDeployment = await api.getCloudDeployment(deployment.id);
+
+      // Save deploy info to project.json
+      const projectConfig = await loadProjectConfig();
+      if (projectConfig) {
+        projectConfig.deploy = {
+          platform: 'railway',
+          railwayProjectId: deployment.projectId,
+          railwayServiceId: deployment.serviceId,
+          railwayEnvironmentId: deployment.environmentId,
+          url: finalDeployment.url,
+        };
+        await saveProjectConfig(projectConfig);
+      }
 
       console.log(chalk.bold('\n✨ Your app is live!\n'));
       console.log(`   ${chalk.cyan(finalDeployment.url)}`);
@@ -413,19 +450,82 @@ function checkBranchPushed(projectDir: string, branch: string): boolean {
 }
 
 /**
- * Detect if project uses a database
+ * Detect database and ORM info
  */
-function detectDatabaseUsage(projectDir: string): boolean {
+interface DatabaseInfo {
+  detected: boolean;
+  orm?: 'drizzle' | 'prisma' | 'typeorm' | 'sequelize' | 'knex' | 'raw';
+  hasMigrations: boolean;
+  migrationsDir?: string;
+  migrateCommand?: string;
+}
+
+function detectDatabaseInfo(projectDir: string): DatabaseInfo {
   const packageJsonPath = path.join(projectDir, 'package.json');
-  if (fs.existsSync(packageJsonPath)) {
-    try {
-      const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
-      const deps = { ...pkg.dependencies, ...pkg.devDependencies };
-      const dbPackages = ['prisma', '@prisma/client', 'drizzle-orm', 'typeorm', 'sequelize', 'knex', 'pg', 'mysql2', 'mongoose'];
-      return dbPackages.some(p => deps[p]);
-    } catch {}
+  const result: DatabaseInfo = { detected: false, hasMigrations: false };
+
+  if (!fs.existsSync(packageJsonPath)) {
+    return result;
   }
-  return false;
+
+  try {
+    const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
+    const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+    const scripts = pkg.scripts || {};
+
+    // Detect ORM
+    if (deps['drizzle-orm']) {
+      result.detected = true;
+      result.orm = 'drizzle';
+      // Check for drizzle migrations
+      if (fs.existsSync(path.join(projectDir, 'drizzle')) ||
+          fs.existsSync(path.join(projectDir, 'migrations'))) {
+        result.hasMigrations = true;
+        result.migrationsDir = fs.existsSync(path.join(projectDir, 'drizzle')) ? 'drizzle' : 'migrations';
+      }
+      // Check for migrate script
+      if (scripts['db:migrate'] || scripts['migrate']) {
+        result.migrateCommand = scripts['db:migrate'] ? 'npm run db:migrate' : 'npm run migrate';
+      } else if (deps['drizzle-kit']) {
+        result.migrateCommand = 'npx drizzle-kit migrate';
+      }
+    } else if (deps['prisma'] || deps['@prisma/client']) {
+      result.detected = true;
+      result.orm = 'prisma';
+      if (fs.existsSync(path.join(projectDir, 'prisma', 'migrations'))) {
+        result.hasMigrations = true;
+        result.migrationsDir = 'prisma/migrations';
+      }
+      result.migrateCommand = 'npx prisma migrate deploy';
+    } else if (deps['typeorm']) {
+      result.detected = true;
+      result.orm = 'typeorm';
+      if (fs.existsSync(path.join(projectDir, 'migrations')) ||
+          fs.existsSync(path.join(projectDir, 'src', 'migrations'))) {
+        result.hasMigrations = true;
+      }
+      result.migrateCommand = 'npx typeorm migration:run';
+    } else if (deps['sequelize']) {
+      result.detected = true;
+      result.orm = 'sequelize';
+      if (fs.existsSync(path.join(projectDir, 'migrations'))) {
+        result.hasMigrations = true;
+      }
+      result.migrateCommand = 'npx sequelize-cli db:migrate';
+    } else if (deps['knex']) {
+      result.detected = true;
+      result.orm = 'knex';
+      if (fs.existsSync(path.join(projectDir, 'migrations'))) {
+        result.hasMigrations = true;
+      }
+      result.migrateCommand = 'npx knex migrate:latest';
+    } else if (deps['pg'] || deps['mysql2'] || deps['mongoose']) {
+      result.detected = true;
+      result.orm = 'raw';
+    }
+  } catch {}
+
+  return result;
 }
 
 /**
