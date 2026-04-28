@@ -122,8 +122,31 @@ export function startAuthCallbackServer(port: number = 9876): Promise<{ code: st
         }
       }
 
-      // Handle hash fragment redirect (Supabase sends tokens in hash)
+      // Handle callback from web app with tokens in query string
       if (url.pathname === '/auth') {
+        const tokensParam = url.searchParams.get('tokens');
+
+        if (tokensParam) {
+          // Tokens received from web app callback
+          res.writeHead(200, { 'Content-Type': 'text/html' });
+          res.end(`
+            <html>
+              <body style="font-family: system-ui; padding: 40px; text-align: center; background: #0a0a0a; color: #fff;">
+                <h1 style="color: #7ee787;">Success!</h1>
+                <p>You're now logged in to LastMile.</p>
+                <p style="color: #8b949e;">You can close this window and return to your terminal.</p>
+                <script>setTimeout(() => window.close(), 1000)</script>
+              </body>
+            </html>
+          `);
+          resolve({
+            code: tokensParam,
+            close: () => server.close(),
+          });
+          return;
+        }
+
+        // Fallback: Handle hash fragment redirect (direct Supabase flow)
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end(`
           <html>

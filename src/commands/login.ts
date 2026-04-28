@@ -11,7 +11,7 @@ import {
 import { createApiClient } from '../lib/api-client.js';
 import { loadConfig } from '../lib/config.js';
 
-const SUPABASE_URL = process.env.LASTMILE_SUPABASE_URL || 'https://qciymnwjsxtmpeqgogws.supabase.co';
+const WEB_URL = process.env.LASTMILE_WEB_URL || 'https://lastmile.sh';
 const CALLBACK_PORT = 9876;
 
 export const loginCommand = new Command('login')
@@ -36,14 +36,8 @@ export const loginCommand = new Command('login')
         choices: [
           { name: 'GitHub', value: 'github' },
           { name: 'Google', value: 'google' },
-          { name: 'Email (magic link)', value: 'email' },
         ],
       });
-    }
-
-    if (provider === 'email') {
-      await handleEmailLogin();
-      return;
     }
 
     // OAuth flow (GitHub or Google)
@@ -53,9 +47,8 @@ export const loginCommand = new Command('login')
       // Start local callback server
       const callbackPromise = startAuthCallbackServer(CALLBACK_PORT);
 
-      // Build auth URL
-      const redirectUri = `http://localhost:${CALLBACK_PORT}/auth`;
-      const authUrl = `${SUPABASE_URL}/auth/v1/authorize?provider=${provider}&redirect_to=${encodeURIComponent(redirectUri)}`;
+      // Build auth URL - route through web app for branding
+      const authUrl = `${WEB_URL}/auth/cli?port=${CALLBACK_PORT}&provider=${provider}`;
 
       spinner.text = 'Opening browser...';
 
@@ -130,76 +123,6 @@ export const loginCommand = new Command('login')
       process.exit(1);
     }
   });
-
-/**
- * Handle email magic link login
- */
-async function handleEmailLogin() {
-  const { input } = await import('@inquirer/prompts');
-
-  const email = await input({
-    message: 'Enter your email:',
-    validate: (value) => {
-      if (!value.includes('@')) return 'Please enter a valid email';
-      return true;
-    },
-  });
-
-  const spinner = ora('Sending magic link...').start();
-
-  try {
-    // Call Supabase to send magic link
-    const response = await fetch(`${SUPABASE_URL}/auth/v1/otp`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': process.env.LASTMILE_SUPABASE_ANON_KEY || '',
-      },
-      body: JSON.stringify({
-        email,
-        options: {
-          emailRedirectTo: `http://localhost:${CALLBACK_PORT}/auth`,
-        },
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error('Failed to send magic link');
-    }
-
-    spinner.succeed('Magic link sent!');
-    console.log(chalk.dim(`\nCheck your email (${email}) and click the link.`));
-    console.log(chalk.dim('Waiting for you to click the link...\n'));
-
-    // Wait for callback
-    const { code, close } = await startAuthCallbackServer(CALLBACK_PORT);
-
-    const tokens = JSON.parse(code);
-
-    if (!tokens.access_token) {
-      throw new Error('No access token received');
-    }
-
-    const expiresIn = parseInt(tokens.expires_in) || 3600;
-
-    await saveAuthSession({
-      accessToken: tokens.access_token,
-      refreshToken: tokens.refresh_token,
-      expiresAt: Date.now() + expiresIn * 1000,
-      user: {
-        id: 'unknown',
-        email,
-      },
-    });
-
-    close();
-    console.log(chalk.green('\n✓ Logged in successfully!\n'));
-  } catch (error) {
-    spinner.fail('Login failed');
-    console.log(chalk.red(error instanceof Error ? error.message : 'Unknown error'));
-    process.exit(1);
-  }
-}
 
 /**
  * Open URL in default browser
