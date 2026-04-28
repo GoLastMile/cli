@@ -1,8 +1,8 @@
 import type { Config } from './config.js';
 import type { AnalyzeResponse, Deployment, GeneratedFix, FileChange } from './types.js';
 
-// Re-export types for backwards compatibility
-export type { AnalyzeResponse, Deployment, Gap, Stack, Classification, GeneratedFix, FileChange } from './types.js';
+// Re-export types
+export type { AnalyzeResponse, Deployment, Gap, Stack, ProjectAnalysis, GeneratedFix, FileChange } from './types.js';
 
 const DEFAULT_API_URL = 'http://localhost:3001';
 
@@ -54,7 +54,7 @@ export function createApiClient(config: Config) {
   }
 
   return {
-    async analyze(data: { files: Record<string, string> }): Promise<AnalyzeResponse> {
+    async analyze(data: { files: Record<string, string>; projectId?: string }): Promise<AnalyzeResponse> {
       return request('/v1/analyze', { method: 'POST', body: JSON.stringify(data) });
     },
 
@@ -405,6 +405,61 @@ export function createApiClient(config: Config) {
       };
     }> {
       return request('/v1/auth/me');
+    },
+
+    // =========================================================================
+    // Projects
+    // =========================================================================
+
+    /**
+     * Create a new project
+     */
+    async createProject(data: {
+      name: string;
+      repoUrl?: string;
+      repoFullName?: string;
+    }): Promise<{
+      id: string;
+      name: string;
+      repoUrl: string | null;
+      repoFullName: string | null;
+      createdAt: string;
+    }> {
+      return request('/v1/projects', { method: 'POST', body: JSON.stringify(data) });
+    },
+
+    /**
+     * List user's projects
+     */
+    async listProjects(): Promise<{
+      projects: Array<{
+        id: string;
+        name: string;
+        repoUrl: string | null;
+        repoFullName: string | null;
+        status: string;
+        readinessScore: number | null;
+        createdAt: string;
+        updatedAt: string;
+      }>;
+    }> {
+      return request('/v1/projects');
+    },
+
+    /**
+     * Get a specific project
+     */
+    async getProject(id: string): Promise<{
+      id: string;
+      name: string;
+      repoUrl: string | null;
+      repoFullName: string | null;
+      status: string;
+      readinessScore: number | null;
+      createdAt: string;
+      updatedAt: string;
+    }> {
+      return request(`/v1/projects/${id}`);
     },
   };
 }

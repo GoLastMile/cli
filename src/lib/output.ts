@@ -2,7 +2,7 @@ import chalk from 'chalk';
 import boxen from 'boxen';
 import gradient from 'gradient-string';
 import ora, { Ora } from 'ora';
-import type { Gap, Classification } from './types.js';
+import type { Gap, ProjectAnalysis } from './types.js';
 
 // Check for NO_COLOR environment variable (accessibility)
 const noColor = process.env.NO_COLOR !== undefined || process.env.TERM === 'dumb';
@@ -183,10 +183,9 @@ export function printStats(stats: AnalysisStats): void {
 }
 
 /**
- * Print the app classification info
+ * Print comprehensive project analysis info
  */
-export function printClassification(classification: Classification): void {
-  // Format architecture type (e.g., "api-only" -> "API Only")
+export function printProjectAnalysis(pa: ProjectAnalysis): void {
   const formatType = (type: string): string => {
     return type
       .split('-')
@@ -194,39 +193,88 @@ export function printClassification(classification: Classification): void {
       .join(' ');
   };
 
+  // Product type + Architecture + Maturity stage
+  const productType = pa.productType?.type || 'Unknown';
+  const productLabel = noColor
+    ? formatType(productType)
+    : chalk.yellow.bold(formatType(productType));
   const archLabel = noColor
-    ? formatType(classification.architecture.type)
-    : chalk.cyan.bold(formatType(classification.architecture.type));
-  const purposeLabel = noColor
-    ? formatType(classification.purpose.type)
-    : chalk.magenta.bold(formatType(classification.purpose.type));
+    ? formatType(pa.architecture.type)
+    : chalk.cyan.bold(formatType(pa.architecture.type));
+  const stageLabel = noColor
+    ? formatType(pa.maturity.stage)
+    : chalk.magenta.bold(formatType(pa.maturity.stage));
+  const confidencePct = Math.round(pa.confidence * 100);
 
   const line = noColor
-    ? `  Detected: ${archLabel} (${classification.architecture.confidence}%) + ${purposeLabel} (${classification.purpose.confidence}%)`
+    ? `  Detected: ${productLabel} | ${archLabel} | ${stageLabel} (${confidencePct}% confidence)`
     : chalk.dim('  Detected: ') +
-      archLabel + chalk.dim(` (${classification.architecture.confidence}%)`) +
-      chalk.dim(' + ') +
-      purposeLabel + chalk.dim(` (${classification.purpose.confidence}%)`);
+      productLabel +
+      chalk.dim(' | ') +
+      archLabel +
+      chalk.dim(' | ') +
+      stageLabel +
+      chalk.dim(` (${confidencePct}% confidence)`);
 
   console.log(line);
 
-  // Features as tags with intelligent wrapping
-  if (classification.features.length > 0) {
+  // Build feature tags from analysis
+  const features: string[] = [];
+
+  // Framework
+  if (pa.framework) {
+    let fw = pa.framework.name;
+    if (pa.framework.variant) fw += `-${pa.framework.variant}`;
+    features.push(fw);
+  }
+
+  // Languages
+  for (const lang of pa.languages.slice(0, 2)) {
+    features.push(lang.name);
+  }
+
+  // Database
+  if (pa.database) {
+    features.push(pa.database.provider || pa.database.type);
+    if (pa.database.orm) features.push(pa.database.orm);
+  }
+
+  // Auth
+  if (pa.auth?.provider) features.push(pa.auth.provider);
+
+  // API style
+  if (pa.api?.style) features.push(pa.api.style);
+
+  // Testing
+  if (pa.testing?.hasUnitTests) features.push('unit-tests');
+  if (pa.testing?.hasE2ETests) features.push('e2e-tests');
+
+  // Deployment
+  if (pa.deployment.hasDockerfile) features.push('docker');
+  if (pa.deployment.hasCI) features.push('ci');
+  if (pa.tooling.hasTypeScript) features.push('typescript');
+
+  // External services (limit to 3)
+  for (const svc of pa.externalServices.slice(0, 3)) {
+    features.push(svc.name);
+  }
+
+  // Print features as tags
+  if (features.length > 0) {
     const termWidth = getTerminalWidth();
-    const prefixText = '  Features: ';
+    const prefixText = '  Stack: ';
     const prefix = noColor ? prefixText : chalk.dim(prefixText);
-    const indent = '            '; // Same width as "  Features: "
+    const indent = '         '; // Same width as "  Stack: "
     const maxFeatures = 12;
-    const displayFeatures = classification.features.slice(0, maxFeatures);
+    const displayFeatures = features.slice(0, maxFeatures);
 
     let currentLine = prefix;
     const lines: string[] = [];
 
-    displayFeatures.forEach((f, i) => {
+    displayFeatures.forEach((f) => {
       const tag = noColor ? `[${f}]` : chalk.bgGray.white(` ${f} `);
-      const tagLen = f.length + 3; // Account for brackets/padding
+      const tagLen = f.length + 3;
 
-      // Estimate current line length (strip ANSI codes)
       const currentLen = currentLine.replace(/\x1b\[[0-9;]*m/g, '').length;
       const isFirstTag = currentLen === prefixText.length;
 
@@ -238,8 +286,7 @@ export function printClassification(classification: Classification): void {
       }
     });
 
-    // Add "+N more" if needed
-    const moreCount = classification.features.length - maxFeatures;
+    const moreCount = features.length - maxFeatures;
     if (moreCount > 0) {
       const moreText = noColor ? `+${moreCount} more` : chalk.dim(`+${moreCount} more`);
       currentLine += ' ' + moreText;
@@ -252,7 +299,6 @@ export function printClassification(classification: Classification): void {
     console.log(lines.join('\n'));
   }
 
-  // Extra spacing after classification block
   console.log();
   console.log();
 }

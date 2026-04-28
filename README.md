@@ -2,13 +2,36 @@
 
 > Ship your vibe-coded projects to production with confidence.
 
-LastMile is a CLI tool that analyzes your codebase for production readiness gaps and helps you fix them before deploying. Built for developers who move fast but want to ship responsibly.
+LastMile analyzes your codebase for production readiness gaps and helps you fix them before deploying. Built for developers who move fast but want to ship responsibly.
+
+**Two ways to use LastMile:**
+- **MCP Server** - Integrate with Claude Code, Cursor, or any AI assistant
+- **CLI** - Run directly from your terminal
 
 ## Quick Start
 
+### With AI Assistants (Recommended)
+
+Add LastMile to your AI assistant's MCP configuration:
+
+```json
+// Claude Code: ~/.claude/settings.json
+{
+  "mcpServers": {
+    "lastmile": {
+      "command": "lastmile-mcp"
+    }
+  }
+}
+```
+
+Then just ask your AI: *"Analyze this project for production readiness"*
+
+### With CLI
+
 ```bash
 # Install
-curl -fsSL https://raw.githubusercontent.com/GoLastMile/cli/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/GoLastMile/lastmile/main/install.sh | bash
 
 # Analyze your project
 cd your-project
@@ -39,13 +62,13 @@ brew install lastmile
 ### Shell Script
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/GoLastMile/cli/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/GoLastMile/lastmile/main/install.sh | bash
 ```
 
 ### From Source
 
 ```bash
-git clone https://github.com/GoLastMile/cli.git
+git clone https://github.com/GoLastMile/lastmile.git
 cd cli && pnpm install && pnpm build
 ```
 
@@ -149,7 +172,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install LastMile
-        run: curl -fsSL https://raw.githubusercontent.com/GoLastMile/cli/main/install.sh | bash
+        run: curl -fsSL https://raw.githubusercontent.com/GoLastMile/lastmile/main/install.sh | bash
       - name: Analyze
         run: lastmile analyze --json
 ```

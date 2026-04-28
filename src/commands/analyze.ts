@@ -7,11 +7,12 @@ import ora from 'ora';
 import { confirm } from '@inquirer/prompts';
 import { loadConfig } from '../lib/config.js';
 import { createApiClient, type GeneratedFix } from '../lib/api-client.js';
+import { loadProjectConfig } from './init.js';
 import { collectFiles } from '../lib/file-collector.js';
 import {
   printHeader,
   printScore,
-  printClassification,
+  printProjectAnalysis,
   formatGaps,
   printSummary,
   printStats,
@@ -153,6 +154,10 @@ export const analyzeCommand = new Command('analyze')
     const targetDir = pathArg !== '.' ? pathArg : (options.dir || '.');
     const projectRoot = resolve(process.cwd(), targetDir);
 
+    // Load project config (optional - analysis works without it)
+    const projectConfig = await loadProjectConfig();
+    const projectId = projectConfig?.projectId;
+
     // For JSON mode, skip all fancy output
     if (options.json) {
       // Use stderr for spinner to keep stdout clean for JSON
@@ -161,6 +166,7 @@ export const analyzeCommand = new Command('analyze')
         const files = await collectFiles(targetDir);
         const analysis = await api.analyze({
           files: Object.fromEntries(files),
+          projectId,
         });
         spinner.stop();
         console.log(JSON.stringify(analysis, null, 2));
@@ -193,6 +199,7 @@ export const analyzeCommand = new Command('analyze')
       // Call API (this runs while we show progress)
       const analysisPromise = api.analyze({
         files: Object.fromEntries(files),
+        projectId,
       });
 
       // Continue showing progress phases while API works
@@ -217,9 +224,9 @@ export const analyzeCommand = new Command('analyze')
       // Print score with progress bar
       printScore(analysis.readinessScore);
 
-      // Print classification if available
-      if (analysis.classification) {
-        printClassification(analysis.classification);
+      // Print project analysis if available
+      if (analysis.projectAnalysis) {
+        printProjectAnalysis(analysis.projectAnalysis);
       }
 
       // Calculate stats

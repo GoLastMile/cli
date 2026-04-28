@@ -4,15 +4,16 @@
   "description": "Ship your vibe-coded projects to production",
   "type": "module",
   "bin": {
-    "lastmile": "./bin/lastmile.js"
+    "lastmile": "./bin/lastmile.js",
+    "lastmile-mcp": "./bin/lastmile-mcp.js"
   },
   "files": [
     "dist",
     "bin"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts",
-    "dev": "tsup src/index.ts --format esm --watch",
+    "build": "tsup src/index.ts src/mcp/server.ts --format esm --dts",
+    "dev": "tsup src/index.ts src/mcp/server.ts --format esm --watch",
     "typecheck": "tsc --noEmit",
     "build:binary": "bun build src/index.ts --compile --outfile releases/lastmile",
     "build:binary:all": "npm run build:binary:macos-arm64 && npm run build:binary:macos-x64 && npm run build:binary:linux-x64 && npm run build:binary:windows-x64",
@@ -22,6 +23,7 @@
     "build:binary:windows-x64": "bun build src/index.ts --compile --target=bun-windows-x64 --outfile releases/lastmile-windows-x64.exe"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
     "@inquirer/prompts": "^5.0.0",
     "boxen": "^8.0.1",
     "chalk": "^5.3.0",

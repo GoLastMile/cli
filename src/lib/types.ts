@@ -19,14 +19,84 @@ export interface Gap {
 }
 
 /**
- * Project classification result
+ * Comprehensive project analysis from LLM
  */
-export interface Classification {
-  architecture: { type: string; confidence: number };
-  purpose: { type: string; confidence: number };
-  features: string[];
+export interface ProjectAnalysis {
+  languages: Array<{ name: string; percentage: number }>;
+  framework?: {
+    name: string;
+    version?: string;
+    variant?: string;
+    metaFramework?: string;
+  };
+  architecture: {
+    type: string;
+    hasBackend: boolean;
+    hasFrontend: boolean;
+    hasDatabase: boolean;
+    isMonorepo: boolean;
+    monorepoTool?: string;
+  };
+  database?: {
+    type: string;
+    provider?: string;
+    orm?: string;
+  };
+  auth?: {
+    provider?: string;
+    strategy: string[];
+  };
+  api?: {
+    style: string;
+    validationLibrary?: string;
+  };
+  ui?: {
+    library?: string;
+    styling?: string;
+    componentLibrary?: string;
+  };
+  testing?: {
+    hasUnitTests: boolean;
+    hasE2ETests: boolean;
+    unitFramework?: string;
+    e2eFramework?: string;
+    estimatedCoverage: string;
+  };
+  tooling: {
+    packageManager: string;
+    bundler?: string;
+    hasTypeScript: boolean;
+    typeScriptStrictness?: string;
+  };
+  deployment: {
+    targetPlatform?: string;
+    hasDockerfile: boolean;
+    hasCI: boolean;
+    ciPlatform?: string;
+    isServerless: boolean;
+    isEdgeCompatible: boolean;
+  };
+  externalServices: Array<{ name: string; category: string }>;
+  codeQuality: {
+    hasLinter: boolean;
+    hasFormatter: boolean;
+    hasPreCommitHooks: boolean;
+  };
+  maturity: {
+    stage: string;
+    readinessScore: number;
+    blockers: string[];
+  };
+  productType?: {
+    type: string;
+    confidence: number;
+    description?: string;
+    signals: string[];
+    businessModel?: string;
+    audience?: string;
+  };
   confidence: number;
-  signals?: string[];
+  signals: string[];
 }
 
 /**
@@ -54,11 +124,10 @@ export interface Deployment {
  * Analysis response from the API
  */
 export interface AnalyzeResponse {
-  id: string;
   gaps: Gap[];
   stack: Stack;
   readinessScore: number;
-  classification?: Classification;
+  projectAnalysis?: ProjectAnalysis;
 }
 
 /**
