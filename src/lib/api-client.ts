@@ -74,56 +74,73 @@ export function createApiClient(config: Config) {
       message?: string;
       data?: unknown;
     }> {
-      const url = `${baseUrl}/v1/analyze/stream`;
+      const controller = new AbortController();
 
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'text/event-stream',
-          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-        },
-        body: JSON.stringify(data),
-      });
+      // Clean up on process signals
+      const cleanup = () => controller.abort();
+      process.on('SIGINT', cleanup);
+      process.on('SIGTERM', cleanup);
 
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({ message: 'Unknown error' }));
-        throw new Error(error.message || error.error || `HTTP ${response.status}`);
-      }
+      try {
+        const url = `${baseUrl}/v1/analyze/stream`;
 
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error('No response body');
-      }
+        const response = await fetch(url, {
+          method: 'POST',
+          signal: controller.signal,
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'text/event-stream',
+            ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+          },
+          body: JSON.stringify(data),
+        });
 
-      const decoder = new TextDecoder();
-      let buffer = '';
+        if (!response.ok) {
+          const error = await response.json().catch(() => ({ message: 'Unknown error' }));
+          throw new Error(error.message || error.error || `HTTP ${response.status}`);
+        }
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+        const reader = response.body?.getReader();
+        if (!reader) {
+          throw new Error('No response body');
+        }
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+        const decoder = new TextDecoder();
+        let buffer = '';
 
-        for (const line of lines) {
-          if (line.startsWith('data:')) {
-            const data = line.slice(5).trim();
-            if (data) {
-              try {
-                const event = JSON.parse(data);
-                yield event;
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
 
-                if (event.type === 'complete' || event.type === 'error') {
-                  return;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+              if (line.startsWith('data:')) {
+                const jsonData = line.slice(5).trim();
+                if (jsonData) {
+                  try {
+                    const event = JSON.parse(jsonData);
+                    yield event;
+
+                    if (event.type === 'complete' || event.type === 'error') {
+                      return;
+                    }
+                  } catch {
+                    // Skip malformed JSON
+                  }
                 }
-              } catch {
-                // Skip malformed JSON
               }
             }
           }
+        } finally {
+          reader.cancel().catch(() => {});
         }
+      } finally {
+        process.off('SIGINT', cleanup);
+        process.off('SIGTERM', cleanup);
       }
     },
 
@@ -295,54 +312,71 @@ export function createApiClient(config: Config) {
       fixes?: GeneratedFix[];
       skipped?: Array<{ gapId: string; reason: string }>;
     }> {
-      const response = await fetch(`${baseUrl}/v1/fixes/generate-stream`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'text/event-stream',
-          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-        },
-        body: JSON.stringify(data),
-      });
+      const controller = new AbortController();
 
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({ message: 'Unknown error' }));
-        throw new Error(error.message || error.error || `HTTP ${response.status}`);
-      }
+      // Clean up on process signals
+      const cleanup = () => controller.abort();
+      process.on('SIGINT', cleanup);
+      process.on('SIGTERM', cleanup);
 
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error('No response body');
-      }
+      try {
+        const response = await fetch(`${baseUrl}/v1/fixes/generate-stream`, {
+          method: 'POST',
+          signal: controller.signal,
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'text/event-stream',
+            ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+          },
+          body: JSON.stringify(data),
+        });
 
-      const decoder = new TextDecoder();
-      let buffer = '';
+        if (!response.ok) {
+          const error = await response.json().catch(() => ({ message: 'Unknown error' }));
+          throw new Error(error.message || error.error || `HTTP ${response.status}`);
+        }
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+        const reader = response.body?.getReader();
+        if (!reader) {
+          throw new Error('No response body');
+        }
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+        const decoder = new TextDecoder();
+        let buffer = '';
 
-        for (const line of lines) {
-          if (line.startsWith('data:')) {
-            const jsonData = line.slice(5).trim();
-            if (jsonData) {
-              try {
-                const event = JSON.parse(jsonData);
-                yield event;
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
 
-                if (event.type === 'complete' || event.type === 'error') {
-                  return;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+              if (line.startsWith('data:')) {
+                const jsonData = line.slice(5).trim();
+                if (jsonData) {
+                  try {
+                    const event = JSON.parse(jsonData);
+                    yield event;
+
+                    if (event.type === 'complete' || event.type === 'error') {
+                      return;
+                    }
+                  } catch {
+                    // Skip malformed JSON
+                  }
                 }
-              } catch {
-                // Skip malformed JSON
               }
             }
           }
+        } finally {
+          reader.cancel().catch(() => {});
         }
+      } finally {
+        process.off('SIGINT', cleanup);
+        process.off('SIGTERM', cleanup);
       }
     },
 
