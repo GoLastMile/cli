@@ -23,15 +23,22 @@ const DEFAULT_IGNORE = [
   'vendor',
   'target',
   '.lastmile',
-  // Lock files - contain transitive deps that cause false positives
+];
+
+// Lock files - include filename only (empty content) for package manager detection
+const LOCKFILES = new Set([
   'pnpm-lock.yaml',
   'package-lock.json',
   'yarn.lock',
+  'bun.lockb',
   'Gemfile.lock',
   'Cargo.lock',
   'poetry.lock',
+  'Pipfile.lock',
   'composer.lock',
-];
+  'go.sum',
+  'pubspec.lock',
+]);
 
 const ANALYZABLE_EXTENSIONS = new Set([
   '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
@@ -108,6 +115,12 @@ export async function collectFiles(
       if (entry.isDirectory()) {
         await walk(fullPath);
       } else if (entry.isFile()) {
+        // Lockfiles: include with empty content (filename is enough for package manager detection)
+        if (LOCKFILES.has(entry.name)) {
+          files.set(relativePath, '');
+          continue;
+        }
+
         const ext = extname(entry.name);
         const isAnalyzable = ANALYZABLE_EXTENSIONS.has(ext) ||
                              ANALYZABLE_FILES.has(entry.name) ||

@@ -431,17 +431,21 @@ export const analyzeCommand = new Command('analyze')
       console.log();
 
       try {
-        let backendFixes: GeneratedFix[] = [];
-        let localFixes: LocalFix[] = [];
         const installCommands: string[] = [];
         const notes: string[] = [];
 
         // Use streaming fix generation for real-time progress
         const useOrchestration = options.orchestration !== false;
 
+        // Track applied files to avoid duplicates
+        const appliedPaths = new Set<string>();
+        let safeAppliedCount = 0;
+        let reviewFixes: LocalFixWithRisk[] = [];
+        let carefulFixes: LocalFixWithRisk[] = [];
+
         try {
           if (useOrchestration) {
-            // Stream fix generation with progress
+            // Stream fix generation with progress - apply safe fixes immediately
             let fixProgress = { current: 0, total: autoFixableGaps.length };
 
             const stream = api.generateFixesStream({
@@ -471,31 +475,61 @@ export const analyzeCommand = new Command('analyze')
                 logUpdate(`  Generating fixes ${chalk.dim(`[0/${fixProgress.total}]`)}`);
               } else if (event.type === 'progress') {
                 fixProgress.current = event.current || 0;
-                const status = event.success ? chalk.green('✓') : chalk.red('✗');
-                const files = (event as any).files as string[] | undefined;
+                const eventFix = (event as any).fix as GeneratedFix | undefined;
+                const eventFiles = (event as any).files as string[] | undefined;
                 const gapTitle = event.gapTitle || 'Unknown';
 
-                // Show: status [n/total] gap title -> file(s)
-                let line = `  ${status} ${chalk.dim(`[${fixProgress.current}/${fixProgress.total}]`)} ${gapTitle}`;
-                if (files && files.length > 0) {
-                  const fileInfo = files.length === 1
-                    ? chalk.cyan(files[0])
-                    : `${chalk.cyan(files[0])} ${chalk.dim(`+${files.length - 1} more`)}`;
-                  line += `\n      ${chalk.dim('->')} ${fileInfo}`;
-                }
-                logUpdate(line);
-              } else if (event.type === 'complete') {
-                logUpdate.done();
-                console.log(chalk.green(`  ✓ Generated ${event.fixes?.length || 0} fixes\n`));
+                if (event.success && eventFix) {
+                  // Convert and categorize the fix
+                  const localFixes = convertToLocalFixes(projectRoot, [eventFix], autoFixableGaps);
 
-                if (event.fixes) {
-                  backendFixes.push(...event.fixes);
-                  for (const fix of event.fixes) {
-                    installCommands.push(...fix.installCommands);
-                    if (fix.notes) {
-                      notes.push(...fix.notes);
+                  for (const fix of localFixes) {
+                    if (appliedPaths.has(fix.filePath)) continue;
+
+                    if (fix.risk === 'safe') {
+                      // Apply safe fixes immediately
+                      try {
+                        const dir = dirname(fix.filePath);
+                        await mkdir(dir, { recursive: true });
+                        await writeFile(fix.filePath, fix.newContent, 'utf-8');
+                        appliedPaths.add(fix.filePath);
+                        safeAppliedCount++;
+
+                        // Show applied file
+                        const relativePath = fix.filePath.replace(projectRoot + '/', '');
+                        logUpdate(`  ${chalk.green('✓')} ${chalk.dim(`[${fixProgress.current}/${fixProgress.total}]`)} ${gapTitle}\n      ${chalk.dim('->')} ${chalk.green(relativePath)} ${chalk.dim('(applied)')}`);
+                      } catch (err) {
+                        logUpdate(`  ${chalk.red('✗')} ${chalk.dim(`[${fixProgress.current}/${fixProgress.total}]`)} ${gapTitle}\n      ${chalk.dim('->')} ${chalk.red('write failed')}`);
+                      }
+                    } else if (fix.risk === 'review') {
+                      reviewFixes.push(fix);
+                      logUpdate(`  ${chalk.yellow('○')} ${chalk.dim(`[${fixProgress.current}/${fixProgress.total}]`)} ${gapTitle}\n      ${chalk.dim('->')} ${chalk.yellow(eventFiles?.[0] || 'unknown')} ${chalk.dim('(needs review)')}`);
+                    } else {
+                      carefulFixes.push(fix);
+                      logUpdate(`  ${chalk.red('!')} ${chalk.dim(`[${fixProgress.current}/${fixProgress.total}]`)} ${gapTitle}\n      ${chalk.dim('->')} ${chalk.red(eventFiles?.[0] || 'unknown')} ${chalk.dim('(security-sensitive)')}`);
                     }
                   }
+
+                  // Collect install commands and notes
+                  installCommands.push(...eventFix.installCommands);
+                  if (eventFix.notes) {
+                    notes.push(...eventFix.notes);
+                  }
+                } else {
+                  // Failed or skipped
+                  const status = chalk.red('✗');
+                  let line = `  ${status} ${chalk.dim(`[${fixProgress.current}/${fixProgress.total}]`)} ${gapTitle}`;
+                  if (event.error) {
+                    line += `\n      ${chalk.dim('->')} ${chalk.red(event.error)}`;
+                  }
+                  logUpdate(line);
+                }
+              } else if (event.type === 'complete') {
+                logUpdate.done();
+                const totalGenerated = (event.fixes?.length || 0);
+                console.log(chalk.green(`\n  ✓ Applied ${safeAppliedCount} safe fix(es)`));
+                if (reviewFixes.length > 0 || carefulFixes.length > 0) {
+                  console.log(chalk.dim(`    ${reviewFixes.length + carefulFixes.length} fix(es) need review`));
                 }
               } else if (event.type === 'error') {
                 logUpdate.done();
@@ -548,69 +582,32 @@ export const analyzeCommand = new Command('analyze')
             }
           }
 
-          // Use local fixes for gaps not covered by backend
-          const coveredGapIds = new Set(backendFixes.map((f) => f.gapId));
-          const uncoveredGaps = autoFixableGaps.filter((g: any) => !coveredGapIds.has(g.id));
-
-          if (uncoveredGaps.length > 0) {
-            const localAnalysis = { ...analysis, gaps: uncoveredGaps };
-            localFixes = buildLocalFixes(projectRoot, files, localAnalysis);
-          }
         } catch (error) {
-          // Backend failed, use local fixes only
+          // Backend failed, fall back to local fixes only
           if (process.env.DEBUG) {
             console.error('Backend fix generation failed:', error);
           }
-          localFixes = buildLocalFixes(projectRoot, files, analysis);
-        }
-
-        // Convert and combine all fixes
-        const backendAsLocalFixes = convertToLocalFixes(projectRoot, backendFixes, autoFixableGaps);
-        const localFixesWithRisk: LocalFixWithRisk[] = localFixes.map(fix => ({
-          ...fix,
-          risk: 'safe' as FixRisk,
-          canAutoApply: true,
-        }));
-
-        const allFixes = [...backendAsLocalFixes, ...localFixesWithRisk];
-
-        // Deduplicate by file path
-        const seenPaths = new Set<string>();
-        const dedupedFixes: LocalFixWithRisk[] = [];
-        for (const fix of allFixes) {
-          if (!seenPaths.has(fix.filePath)) {
-            seenPaths.add(fix.filePath);
-            dedupedFixes.push(fix);
-          }
-        }
-
-        // Group by risk
-        const safeFixes = dedupedFixes.filter(f => f.risk === 'safe');
-        const reviewFixes = dedupedFixes.filter(f => f.risk === 'review');
-        const carefulFixes = dedupedFixes.filter(f => f.risk === 'careful');
-
-        // Progress already shown via streaming
-
-        if (dedupedFixes.length === 0) {
-          console.log(chalk.yellow('\nNo fixes could be generated for these gaps yet.\n'));
-          return;
-        }
-
-        // Track what we'll apply
-        const fixesToApply: LocalFixWithRisk[] = [];
-
-        // Safe fixes - auto-apply (no prompt needed)
-        if (safeFixes.length > 0) {
-          console.log(chalk.green(`\n✓ Applying ${safeFixes.length} safe fix(es)...`));
-          for (const fix of safeFixes) {
-            const relativePath = fix.filePath.replace(projectRoot + '/', '');
-            if (fix.operation === 'delete') {
-              console.log(chalk.red(`  - ${relativePath} (deleted)`));
-            } else {
-              console.log(chalk.green(`  + ${relativePath}`));
+          const localOnlyFixes = buildLocalFixes(projectRoot, files, analysis);
+          for (const fix of localOnlyFixes) {
+            if (appliedPaths.has(fix.filePath)) continue;
+            try {
+              const dir = dirname(fix.filePath);
+              await mkdir(dir, { recursive: true });
+              await writeFile(fix.filePath, fix.newContent, 'utf-8');
+              appliedPaths.add(fix.filePath);
+              safeAppliedCount++;
+            } catch {
+              // Ignore write errors in fallback
             }
           }
-          fixesToApply.push(...safeFixes);
+        }
+
+        // Handle review/careful fixes that were collected during streaming
+        const fixesToApply: LocalFixWithRisk[] = [];
+
+        if (safeAppliedCount === 0 && reviewFixes.length === 0 && carefulFixes.length === 0) {
+          console.log(chalk.yellow('\nNo fixes could be generated for these gaps yet.\n'));
+          return;
         }
 
         // Review fixes - show diff and ask (skip if --yes)
@@ -663,55 +660,59 @@ export const analyzeCommand = new Command('analyze')
           }
         }
 
-        // Apply the fixes
+        // Apply review/careful fixes that user approved
         if (fixesToApply.length > 0) {
           const { deleted } = await applyFixes(fixesToApply, projectRoot);
           const writtenCount = fixesToApply.length - deleted.length;
           if (deleted.length > 0) {
-            console.log(chalk.green(`\n✓ Applied ${writtenCount} fix(es), deleted ${deleted.length} file(s)!`));
+            console.log(chalk.green(`\n✓ Applied ${writtenCount} additional fix(es), deleted ${deleted.length} file(s)!`));
           } else {
-            console.log(chalk.green(`\n✓ Applied ${fixesToApply.length} fix(es)!`));
+            console.log(chalk.green(`\n✓ Applied ${fixesToApply.length} additional fix(es)!`));
           }
+        }
 
-          // Auto-install dependencies
-          const uniqueDeps = [...new Set(installCommands)];
-          if (uniqueDeps.length > 0) {
-            const { cmd, devFlag } = getInstallCommand(analysis.stack.packageManager);
-            const installArgs = cmd === 'npm'
-              ? ['install', devFlag, ...uniqueDeps]
-              : cmd === 'yarn'
-              ? ['add', devFlag, ...uniqueDeps]
-              : cmd === 'pnpm'
-              ? ['add', devFlag, ...uniqueDeps]
-              : cmd === 'bun'
-              ? ['add', devFlag, ...uniqueDeps]
-              : ['install', ...uniqueDeps]; // pip/poetry fallback
+        // Auto-install dependencies
+        const uniqueDeps = [...new Set(installCommands)];
+        if (uniqueDeps.length > 0) {
+          const { cmd, devFlag } = getInstallCommand(analysis.stack.packageManager);
+          const installArgs = cmd === 'npm'
+            ? ['install', devFlag, ...uniqueDeps]
+            : cmd === 'yarn'
+            ? ['add', devFlag, ...uniqueDeps]
+            : cmd === 'pnpm'
+            ? ['add', devFlag, ...uniqueDeps]
+            : cmd === 'bun'
+            ? ['add', devFlag, ...uniqueDeps]
+            : ['install', ...uniqueDeps]; // pip/poetry fallback
 
-            const fullCommand = `${cmd} ${installArgs.join(' ')}`;
-            console.log(chalk.cyan(`\nInstalling dependencies: ${fullCommand}`));
+          const fullCommand = `${cmd} ${installArgs.join(' ')}`;
+          console.log(chalk.cyan(`\nInstalling dependencies: ${fullCommand}`));
 
-            try {
-              await runCommand(cmd, installArgs, projectRoot);
-              console.log(chalk.green('✓ Dependencies installed successfully!'));
-            } catch (installError) {
-              console.log(chalk.yellow(`\nFailed to auto-install. Run manually:`));
-              console.log(chalk.cyan(`  ${fullCommand}`));
-            }
+          try {
+            await runCommand(cmd, installArgs, projectRoot);
+            console.log(chalk.green('✓ Dependencies installed successfully!'));
+          } catch (installError) {
+            console.log(chalk.yellow(`\nFailed to auto-install. Run manually:`));
+            console.log(chalk.cyan(`  ${fullCommand}`));
           }
+        }
 
-          // Show notes
-          if (notes.length > 0) {
-            console.log(chalk.blue('\nNotes:'));
-            for (const note of notes) {
-              console.log(chalk.dim(`  - ${note}`));
-            }
+        // Show notes
+        if (notes.length > 0) {
+          console.log(chalk.blue('\nNotes:'));
+          for (const note of notes) {
+            console.log(chalk.dim(`  - ${note}`));
           }
+        }
 
-          const skipped = dedupedFixes.length - fixesToApply.length;
-          if (skipped > 0) {
-            console.log(chalk.dim(`\n(${skipped} fix(es) were skipped)`));
-          }
+        // Summary
+        const totalApplied = safeAppliedCount + fixesToApply.length;
+        const totalSkipped = reviewFixes.length + carefulFixes.length - fixesToApply.length;
+        if (totalSkipped > 0) {
+          console.log(chalk.dim(`\n(${totalSkipped} fix(es) were skipped)`));
+        }
 
+        if (totalApplied > 0) {
           console.log(chalk.dim(`\nRun ${chalk.cyan('lastmile analyze')} again to verify.\n`));
         } else {
           console.log(chalk.dim('\nNo fixes were applied.\n'));
