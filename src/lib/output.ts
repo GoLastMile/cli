@@ -386,11 +386,22 @@ function formatGapSection(gaps: Gap[], severity: 'critical' | 'warning' | 'info'
       lines.push(`  ${icon} ${title} ${categoryTag}${fixableTag}`);
     }
 
-    // Suggested fix (shorter, more actionable)
+    // Suggested fix - show only the first line (before auto-fix instructions)
     if (gap.suggestedFix) {
-      const arrow = noColor ? '->' : chalk.dim('→');
-      const fix = noColor ? gap.suggestedFix : chalk.cyan(gap.suggestedFix);
-      lines.push(`    ${arrow} ${fix}`);
+      // Strip auto-fix instructions block and get just the human-readable part
+      let displayFix = gap.suggestedFix.split('\n\n=== AUTO-FIX INSTRUCTIONS ===')[0].trim();
+      // Take only first line if still too long
+      const firstLine = displayFix.split('\n')[0];
+      if (firstLine.length > 120) {
+        displayFix = firstLine.substring(0, 117) + '...';
+      } else {
+        displayFix = firstLine;
+      }
+      if (displayFix) {
+        const arrow = noColor ? '->' : chalk.dim('→');
+        const fix = noColor ? displayFix : chalk.cyan(displayFix);
+        lines.push(`    ${arrow} ${fix}`);
+      }
     }
   });
 

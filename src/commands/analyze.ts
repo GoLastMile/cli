@@ -4,20 +4,21 @@ import { writeFile, mkdir, unlink, access } from 'fs/promises';
 import { spawn } from 'child_process';
 import chalk from 'chalk';
 import ora from 'ora';
+import logUpdate from 'log-update';
 import { confirm } from '@inquirer/prompts';
 import { loadConfig } from '../lib/config.js';
 import { createApiClient, type GeneratedFix } from '../lib/api-client.js';
 import { loadProjectConfig } from './init.js';
 import { collectFiles } from '../lib/file-collector.js';
 import {
-  printHeader,
-  printScore,
+  printHeader as printLegacyHeader,
+  printScore as printLegacyScore,
   printProjectAnalysis,
   formatGaps,
   printSummary,
-  printStats,
-  AnalysisProgress,
+  printStats as printLegacyStats,
 } from '../lib/output.js';
+import * as premium from '../lib/premium-output.js';
 import { displayDiff } from '../lib/diff.js';
 import { buildLocalFixes, type LocalFix } from '../lib/fix-engine.js';
 import type { FixRisk } from '../lib/types.js';
@@ -57,13 +58,6 @@ function runCommand(command: string, args: string[], cwd: string): Promise<void>
     });
     proc.on('error', reject);
   });
-}
-
-/**
- * Sleep for a given number of milliseconds
- */
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 /**
@@ -136,6 +130,17 @@ async function applyFixes(fixes: LocalFix[], projectRoot: string): Promise<{ del
   return { deleted };
 }
 
+interface AnalyzerStatus {
+  name: string;
+  status: 'pending' | 'running' | 'done';
+  gapCount: number;
+  batchIndex: number;
+  totalBatches: number;
+  filesProcessed: number;
+  totalFiles: number;
+}
+
+
 export const analyzeCommand = new Command('analyze')
   .description('Analyze your project for production gaps')
   .argument('[path]', 'Directory to analyze', '.')
@@ -179,71 +184,224 @@ export const analyzeCommand = new Command('analyze')
     }
 
     // Interactive mode with nice visuals
-    const progress = new AnalysisProgress();
+    const startTime = Date.now();
 
     try {
       // Print header first if enabled
       if (options.banner !== false) {
-        printHeader();
+        premium.printHeader();
       }
 
       // Step 1: Collect files
       const files = await collectFiles(targetDir);
 
-      // Start progress display with file count (returns start time)
-      progress.start(files.size);
+      // Print file count
+      premium.printFileCount(files.size);
 
-      // Start stepping through the analysis phases
-      await progress.nextPhase(); // Scanning project structure
+      // Use streaming API for real-time progress
+      let analysis: any = null;
+      let currentSpinner: ReturnType<typeof ora> | null = null;
+      let usingLogUpdate = false;
+      const analyzerStatus = new Map<string, AnalyzerStatus>();
 
-      // Call API (this runs while we show progress)
-      const analysisPromise = api.analyze({
+      // Spinner frames for log-update
+      const spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+      let spinnerIndex = 0;
+      let spinnerInterval: ReturnType<typeof setInterval> | null = null;
+
+      const updateLogUpdate = () => {
+        const frame = chalk.magenta(spinnerFrames[spinnerIndex]);
+        spinnerIndex = (spinnerIndex + 1) % spinnerFrames.length;
+
+        const statuses = Array.from(analyzerStatus.values());
+        const done = statuses.filter(s => s.status === 'done').length;
+        const total = statuses.length;
+
+        const header = `${frame} Analyzing ${chalk.dim(`[${done}/${total} complete]`)}`;
+        const progressLines = premium.buildAnalyzerDisplay(analyzerStatus);
+
+        logUpdate(`${header}\n${progressLines}`);
+      };
+
+      const stream = api.analyzeStream({
         files: Object.fromEntries(files),
         projectId,
       });
 
-      // Continue showing progress phases while API works
-      await progress.nextPhase(); // Analyzing security & auth
-      await progress.nextPhase(); // Checking code quality
+      for await (const event of stream) {
+        if (event.type === 'start') {
+          // Already printed file count
+        } else if (event.type === 'phase') {
+          if (event.phase === 'project-analysis') {
+            // Use ora spinner for project analysis phase
+            if (!currentSpinner) {
+              currentSpinner = ora({
+                text: `${event.message} ${chalk.dim(`[${event.phaseIndex}/${event.totalPhases}]`)}`,
+                color: 'magenta',
+                spinner: 'dots',
+              }).start();
+            }
+          } else if (event.phase === 'analyzers') {
+            // Switch to log-update for analyzers phase
+            if (currentSpinner) {
+              currentSpinner.stopAndPersist({
+                symbol: chalk.green('✓'),
+                text: chalk.dim('Stack detected'),
+              });
+              currentSpinner = null;
+            }
 
-      // Wait for API response
-      const analysis = await analysisPromise;
+            // Initialize analyzer status
+            if (event.data) {
+              const data = event.data as { analyzers: Array<{ id: string; name: string }> };
+              for (const analyzer of data.analyzers) {
+                analyzerStatus.set(analyzer.id, {
+                  name: analyzer.name,
+                  status: 'pending',
+                  gapCount: 0,
+                  batchIndex: 0,
+                  totalBatches: 0,
+                  filesProcessed: 0,
+                  totalFiles: 0,
+                });
+              }
+            }
 
-      // Quickly finish remaining phases
-      await progress.finishRemaining();
+            // Start log-update with spinner
+            usingLogUpdate = true;
+            spinnerInterval = setInterval(updateLogUpdate, 80);
+            updateLogUpdate();
+          }
+        } else if (event.type === 'project-analysis') {
+          // Update spinner with detected info
+          if (currentSpinner && event.message) {
+            currentSpinner.text = `${event.message} ${chalk.dim(`[${event.phaseIndex}/${event.totalPhases}]`)}`;
+          }
+        } else if (event.type === 'analyzer-start') {
+          // Mark analyzer as running
+          if (event.data) {
+            const data = event.data as { analyzerId: string; analyzerName: string };
+            const status = analyzerStatus.get(data.analyzerId);
+            if (status) status.status = 'running';
+          }
+        } else if (event.type === 'analyzer-progress') {
+          // Update batch progress for an analyzer
+          if (event.data) {
+            const data = event.data as {
+              analyzerId: string;
+              analyzerName: string;
+              batchIndex: number;
+              totalBatches: number;
+              filesProcessed: number;
+              totalFiles: number;
+              gapsFoundInBatch: number;
+            };
+            const status = analyzerStatus.get(data.analyzerId);
+            if (status) {
+              status.batchIndex = data.batchIndex;
+              status.totalBatches = data.totalBatches;
+              status.filesProcessed = data.filesProcessed;
+              status.totalFiles = data.totalFiles;
+            }
+          }
+        } else if (event.type === 'analyzer-complete') {
+          // Mark analyzer as done
+          if (event.data) {
+            const data = event.data as { analyzerId: string; analyzerName: string; gapCount: number };
+            const status = analyzerStatus.get(data.analyzerId);
+            if (status) {
+              status.status = 'done';
+              status.gapCount = data.gapCount;
+            }
+          }
+        } else if (event.type === 'gap') {
+          // Collect gaps as they arrive
+          if (!analysis) analysis = { gaps: [] };
+          analysis.gaps.push(event.data);
+        } else if (event.type === 'complete') {
+          // Stop log-update spinner
+          if (spinnerInterval) {
+            clearInterval(spinnerInterval);
+            spinnerInterval = null;
+          }
 
-      // Small pause for visual satisfaction
-      await sleep(150);
+          // Show final analyzer state with all done
+          if (usingLogUpdate) {
+            const progressLines = premium.buildAnalyzerDisplay(analyzerStatus);
+            logUpdate(`${chalk.green('✓')} Analysis complete\n${progressLines}`);
+            logUpdate.done();
+            usingLogUpdate = false;
+          }
 
-      // Stop and get duration
-      const durationMs = progress.stop();
+          // Complete ora spinner if still active
+          if (currentSpinner) {
+            currentSpinner.stopAndPersist({
+              symbol: chalk.green('✓'),
+              text: chalk.dim('Analysis complete'),
+            });
+            currentSpinner = null;
+          }
 
-      // Print success message
-      console.log(chalk.green('✓ Analysis complete!\n'));
+          // Build analysis result from complete event, preserving collected gaps
+          const data = event.data as any;
+          const collectedGaps = analysis?.gaps || [];
+          analysis = {
+            readinessScore: data.readinessScore,
+            gaps: collectedGaps,
+            stack: data.stack,
+            stackConfidence: data.stackConfidence,
+            projectAnalysis: data.projectAnalysis,
+          };
+        } else if (event.type === 'error') {
+          // Cleanup on error
+          if (spinnerInterval) {
+            clearInterval(spinnerInterval);
+            spinnerInterval = null;
+          }
+          if (usingLogUpdate) {
+            logUpdate.clear();
+          }
+          if (currentSpinner) {
+            currentSpinner.fail(event.message || 'Analysis failed');
+            currentSpinner = null;
+          }
+          throw new Error(event.message || 'Analysis failed');
+        }
+      }
+
+      // Ensure analysis exists
+      if (!analysis) {
+        throw new Error('Analysis failed: no response received');
+      }
+
+      const durationMs = Date.now() - startTime;
+
+      // Print separator and completion
+      premium.printSeparator();
+      premium.printComplete();
+
+      // Print stack detection if available
+      if (analysis.projectAnalysis) {
+        premium.printStackDetection(analysis.projectAnalysis);
+      }
 
       // Print score with progress bar
-      printScore(analysis.readinessScore);
-
-      // Print project analysis if available
-      if (analysis.projectAnalysis) {
-        printProjectAnalysis(analysis.projectAnalysis);
-      }
+      premium.printScore(analysis.readinessScore);
 
       // Calculate stats
       const fixableCount = analysis.gaps.filter((g: any) => g.autoFixable).length;
 
       // Print stats summary line
-      printStats({
-        fileCount: files.size,
-        durationMs,
-        gapCount: analysis.gaps.length,
-        fixableCount,
-      });
+      premium.printStats(files.size, durationMs, analysis.gaps.length, fixableCount);
 
-      // Print quick summary of findings by category
+      // Print issues summary with tree structure
       if (analysis.gaps.length > 0) {
-        printSummary(analysis.gaps);
-        console.log(formatGaps(analysis.gaps));
+        premium.printIssuesSummary(analysis.gaps);
+      }
+
+      // Print next steps
+      if (fixableCount > 0) {
+        premium.printNextSteps(fixableCount, analysis.gaps.length);
       }
 
       // Check for fixable gaps
@@ -251,9 +409,6 @@ export const analyzeCommand = new Command('analyze')
 
       // Skip fix flow if no fixable gaps, JSON mode, or --no-fix
       if (autoFixableGaps.length === 0 || options.json || options.fix === false) {
-        if (analysis.gaps.length > 0 && autoFixableGaps.length > 0) {
-          console.log(chalk.dim(`\nRun ${chalk.cyan('lastmile analyze --fix')} to auto-fix issues.\n`));
-        }
         return;
       }
 
@@ -550,7 +705,6 @@ export const analyzeCommand = new Command('analyze')
       }
 
     } catch (error) {
-      progress.stop();
       console.log(chalk.red('✗ Analysis failed'));
       console.log();
 

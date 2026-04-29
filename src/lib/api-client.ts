@@ -59,6 +59,75 @@ export function createApiClient(config: Config) {
     },
 
     /**
+     * Stream analysis with real-time progress events via SSE
+     * Returns an async generator that yields progress events
+     */
+    async *analyzeStream(data: {
+      files: Record<string, string>;
+      projectId?: string;
+      options?: { skipLLMVerification?: boolean };
+    }): AsyncGenerator<{
+      type: 'start' | 'phase' | 'project-analysis' | 'analyzer-start' | 'analyzer-complete' | 'gap' | 'complete' | 'error';
+      phase?: string;
+      phaseIndex?: number;
+      totalPhases?: number;
+      message?: string;
+      data?: unknown;
+    }> {
+      const url = `${baseUrl}/v1/analyze/stream`;
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'text/event-stream',
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
+        body: JSON.stringify(data),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ message: 'Unknown error' }));
+        throw new Error(error.message || error.error || `HTTP ${response.status}`);
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error('No response body');
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('data:')) {
+            const data = line.slice(5).trim();
+            if (data) {
+              try {
+                const event = JSON.parse(data);
+                yield event;
+
+                if (event.type === 'complete' || event.type === 'error') {
+                  return;
+                }
+              } catch {
+                // Skip malformed JSON
+              }
+            }
+          }
+        }
+      }
+    },
+
+    /**
      * Generate a fix for a specific gap
      */
     async generateFix(data: { gapId: string; files: Record<string, string> }): Promise<GeneratedFix> {
