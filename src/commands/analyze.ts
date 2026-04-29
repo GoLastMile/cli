@@ -473,16 +473,17 @@ export const analyzeCommand = new Command('analyze')
                 fixProgress.current = event.current || 0;
                 const status = event.success ? chalk.green('✓') : chalk.red('✗');
                 const files = (event as any).files as string[] | undefined;
-                // Show the file path if available, otherwise truncate title
-                let detail: string;
+                const gapTitle = event.gapTitle || 'Unknown';
+
+                // Show: status [n/total] gap title -> file(s)
+                let line = `  ${status} ${chalk.dim(`[${fixProgress.current}/${fixProgress.total}]`)} ${gapTitle}`;
                 if (files && files.length > 0) {
-                  detail = files.length === 1
+                  const fileInfo = files.length === 1
                     ? chalk.cyan(files[0])
                     : `${chalk.cyan(files[0])} ${chalk.dim(`+${files.length - 1} more`)}`;
-                } else {
-                  detail = event.gapTitle?.substring(0, 50) || 'Unknown';
+                  line += `\n      ${chalk.dim('->')} ${fileInfo}`;
                 }
-                logUpdate(`  ${status} ${chalk.dim(`[${fixProgress.current}/${fixProgress.total}]`)} ${detail}`);
+                logUpdate(line);
               } else if (event.type === 'complete') {
                 logUpdate.done();
                 console.log(chalk.green(`  ✓ Generated ${event.fixes?.length || 0} fixes\n`));

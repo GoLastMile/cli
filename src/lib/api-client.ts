@@ -108,31 +108,51 @@ export function createApiClient(config: Config) {
         const decoder = new TextDecoder();
         let buffer = '';
 
+        const processLine = (line: string) => {
+          if (line.startsWith('data:')) {
+            const jsonData = line.slice(5).trim();
+            if (jsonData) {
+              try {
+                return JSON.parse(jsonData);
+              } catch {
+                // Skip malformed JSON
+              }
+            }
+          }
+          return null;
+        };
+
         try {
           while (true) {
             const { done, value } = await reader.read();
-            if (done) break;
 
-            buffer += decoder.decode(value, { stream: true });
+            if (value) {
+              buffer += decoder.decode(value, { stream: true });
+            }
+
+            // Process all complete lines in buffer
             const lines = buffer.split('\n');
             buffer = lines.pop() || '';
 
             for (const line of lines) {
-              if (line.startsWith('data:')) {
-                const jsonData = line.slice(5).trim();
-                if (jsonData) {
-                  try {
-                    const event = JSON.parse(jsonData);
-                    yield event;
-
-                    if (event.type === 'complete' || event.type === 'error') {
-                      return;
-                    }
-                  } catch {
-                    // Skip malformed JSON
-                  }
+              const event = processLine(line);
+              if (event) {
+                yield event;
+                if (event.type === 'complete' || event.type === 'error') {
+                  return;
                 }
               }
+            }
+
+            if (done) {
+              // Process any remaining data in buffer
+              if (buffer.trim()) {
+                const event = processLine(buffer);
+                if (event) {
+                  yield event;
+                }
+              }
+              break;
             }
           }
         } finally {
@@ -344,31 +364,51 @@ export function createApiClient(config: Config) {
         const decoder = new TextDecoder();
         let buffer = '';
 
+        const processLine = (line: string) => {
+          if (line.startsWith('data:')) {
+            const jsonData = line.slice(5).trim();
+            if (jsonData) {
+              try {
+                return JSON.parse(jsonData);
+              } catch {
+                // Skip malformed JSON
+              }
+            }
+          }
+          return null;
+        };
+
         try {
           while (true) {
             const { done, value } = await reader.read();
-            if (done) break;
 
-            buffer += decoder.decode(value, { stream: true });
+            if (value) {
+              buffer += decoder.decode(value, { stream: true });
+            }
+
+            // Process all complete lines in buffer
             const lines = buffer.split('\n');
             buffer = lines.pop() || '';
 
             for (const line of lines) {
-              if (line.startsWith('data:')) {
-                const jsonData = line.slice(5).trim();
-                if (jsonData) {
-                  try {
-                    const event = JSON.parse(jsonData);
-                    yield event;
-
-                    if (event.type === 'complete' || event.type === 'error') {
-                      return;
-                    }
-                  } catch {
-                    // Skip malformed JSON
-                  }
+              const event = processLine(line);
+              if (event) {
+                yield event;
+                if (event.type === 'complete' || event.type === 'error') {
+                  return;
                 }
               }
+            }
+
+            if (done) {
+              // Process any remaining data in buffer
+              if (buffer.trim()) {
+                const event = processLine(buffer);
+                if (event) {
+                  yield event;
+                }
+              }
+              break;
             }
           }
         } finally {
