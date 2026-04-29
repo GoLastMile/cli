@@ -427,8 +427,8 @@ export const analyzeCommand = new Command('analyze')
         return;
       }
 
-      // Generate and apply fixes
-      const fixSpinner = ora('Generating fixes...').start();
+      // Generate and apply fixes with streaming progress
+      console.log();
 
       try {
         let backendFixes: GeneratedFix[] = [];
@@ -436,17 +436,15 @@ export const analyzeCommand = new Command('analyze')
         const installCommands: string[] = [];
         const notes: string[] = [];
 
-        // Try backend fix generation
+        // Use streaming fix generation for real-time progress
         const useOrchestration = options.orchestration !== false;
 
         try {
           if (useOrchestration) {
-            // Use multi-agent orchestration (recommended)
-            if (process.env.DEBUG) {
-              console.log('Using orchestrated fix generation...');
-            }
+            // Stream fix generation with progress
+            let fixProgress = { current: 0, total: autoFixableGaps.length };
 
-            const result = await api.generateOrchestratedFixes({
+            const stream = api.generateFixesStream({
               gaps: autoFixableGaps.map((g: any) => ({
                 id: g.id,
                 category: g.category,
@@ -467,21 +465,40 @@ export const analyzeCommand = new Command('analyze')
               files: Object.fromEntries(files),
             });
 
-            backendFixes.push(...result.fixes);
+            for await (const event of stream) {
+              if (event.type === 'start') {
+                fixProgress.total = event.total || autoFixableGaps.length;
+                logUpdate(`  Generating fixes ${chalk.dim(`[0/${fixProgress.total}]`)}`);
+              } else if (event.type === 'progress') {
+                fixProgress.current = event.current || 0;
+                const status = event.success ? chalk.green('✓') : chalk.red('✗');
+                const files = (event as any).files as string[] | undefined;
+                // Show the file path if available, otherwise truncate title
+                let detail: string;
+                if (files && files.length > 0) {
+                  detail = files.length === 1
+                    ? chalk.cyan(files[0])
+                    : `${chalk.cyan(files[0])} ${chalk.dim(`+${files.length - 1} more`)}`;
+                } else {
+                  detail = event.gapTitle?.substring(0, 50) || 'Unknown';
+                }
+                logUpdate(`  ${status} ${chalk.dim(`[${fixProgress.current}/${fixProgress.total}]`)} ${detail}`);
+              } else if (event.type === 'complete') {
+                logUpdate.done();
+                console.log(chalk.green(`  ✓ Generated ${event.fixes?.length || 0} fixes\n`));
 
-            for (const fix of result.fixes) {
-              installCommands.push(...fix.installCommands);
-              if (fix.notes) {
-                notes.push(...fix.notes);
-              }
-            }
-
-            // Show orchestration info in verbose mode
-            if (options.verbose && result.orchestration) {
-              console.log(chalk.dim(`\nOrchestration: ${result.orchestration.status}`));
-              console.log(chalk.dim(`  ${result.orchestration.summary}`));
-              if (result.orchestration.validation) {
-                console.log(chalk.dim(`  Validation: ${result.orchestration.validation.resolvedCount} resolved, ${result.orchestration.validation.unresolvedCount} unresolved`));
+                if (event.fixes) {
+                  backendFixes.push(...event.fixes);
+                  for (const fix of event.fixes) {
+                    installCommands.push(...fix.installCommands);
+                    if (fix.notes) {
+                      notes.push(...fix.notes);
+                    }
+                  }
+                }
+              } else if (event.type === 'error') {
+                logUpdate.done();
+                throw new Error(event.message || 'Fix generation failed');
               }
             }
           } else {
@@ -571,7 +588,7 @@ export const analyzeCommand = new Command('analyze')
         const reviewFixes = dedupedFixes.filter(f => f.risk === 'review');
         const carefulFixes = dedupedFixes.filter(f => f.risk === 'careful');
 
-        fixSpinner.succeed(`Generated ${dedupedFixes.length} fix(es)`);
+        // Progress already shown via streaming
 
         if (dedupedFixes.length === 0) {
           console.log(chalk.yellow('\nNo fixes could be generated for these gaps yet.\n'));
@@ -700,7 +717,7 @@ export const analyzeCommand = new Command('analyze')
         }
 
       } catch (fixError) {
-        fixSpinner.fail('Fix generation failed');
+        console.log(chalk.red('  ✗ Fix generation failed'));
         console.error(chalk.red(fixError instanceof Error ? fixError.message : 'Unknown error'));
       }
 

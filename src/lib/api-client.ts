@@ -261,6 +261,91 @@ export function createApiClient(config: Config) {
       return request('/v1/fixes/supported-categories');
     },
 
+    /**
+     * Stream fix generation with progress events
+     */
+    async *generateFixesStream(data: {
+      gaps: Array<{
+        id: string;
+        category: string;
+        severity: 'critical' | 'warning' | 'info';
+        title: string;
+        description?: string;
+        filePath?: string;
+        lineNumber?: number;
+        autoFixable: boolean;
+        suggestedFix?: string;
+      }>;
+      stack: {
+        language: string | null;
+        framework: string | null;
+        database: string | null;
+        orm?: string | null;
+      };
+      files: Record<string, string>;
+    }): AsyncGenerator<{
+      type: 'start' | 'progress' | 'complete' | 'error';
+      current?: number;
+      total?: number;
+      gapId?: string;
+      gapTitle?: string;
+      success?: boolean;
+      error?: string;
+      message?: string;
+      fixes?: GeneratedFix[];
+      skipped?: Array<{ gapId: string; reason: string }>;
+    }> {
+      const response = await fetch(`${baseUrl}/v1/fixes/generate-stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'text/event-stream',
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
+        body: JSON.stringify(data),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ message: 'Unknown error' }));
+        throw new Error(error.message || error.error || `HTTP ${response.status}`);
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error('No response body');
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (line.startsWith('data:')) {
+            const jsonData = line.slice(5).trim();
+            if (jsonData) {
+              try {
+                const event = JSON.parse(jsonData);
+                yield event;
+
+                if (event.type === 'complete' || event.type === 'error') {
+                  return;
+                }
+              } catch {
+                // Skip malformed JSON
+              }
+            }
+          }
+        }
+      }
+    },
+
     async deploy(data: { platform: string; token: string; files: Record<string, string> }): Promise<Deployment> {
       // TODO: Implement real deployment API
       // return request('/v1/deploy', { method: 'POST', body: JSON.stringify(data) });
