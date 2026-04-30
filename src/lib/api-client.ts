@@ -165,8 +165,7 @@ export function createApiClient(config: Config) {
     },
 
     /**
-     * Fix a gap using AI agent
-     * The agent can read files, write fixes, and run tests to verify
+     * Fix a gap using AI agent (non-streaming)
      */
     async agentFix(data: {
       gap: {
@@ -201,6 +200,126 @@ export function createApiClient(config: Config) {
     }> {
       const TEN_MINUTES = 10 * 60 * 1000;
       return request('/v1/fixes/agent', { method: 'POST', body: JSON.stringify(data) }, TEN_MINUTES);
+    },
+
+    /**
+     * Fix a gap using AI agent with streaming progress
+     * Yields progress events, then the final result
+     */
+    async *agentFixStream(data: {
+      gap: {
+        id: string;
+        category: string;
+        severity: 'critical' | 'warning' | 'info';
+        title: string;
+        description?: string;
+        filePath?: string;
+        lineNumber?: number;
+        autoFixable: boolean;
+        suggestedFix?: string;
+      };
+      stack: {
+        language: string | null;
+        framework: string | null;
+        database: string | null;
+        orm?: string | null;
+      };
+      files: Record<string, string>;
+      maxIterations?: number;
+    }): AsyncGenerator<{
+      type: 'start' | 'progress' | 'critique' | 'complete' | 'error';
+      message?: string;
+      success?: boolean;
+      filesWritten?: Record<string, string>;
+      iterations?: number;
+      tokensUsed?: number;
+      error?: string;
+    }> {
+      const controller = new AbortController();
+
+      const cleanup = () => controller.abort();
+      process.on('SIGINT', cleanup);
+      process.on('SIGTERM', cleanup);
+
+      try {
+        const url = `${baseUrl}/v1/fixes/agent-stream`;
+
+        const response = await fetch(url, {
+          method: 'POST',
+          signal: controller.signal,
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'text/event-stream',
+            ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+          },
+          body: JSON.stringify(data),
+        });
+
+        if (!response.ok) {
+          const error = await response.json().catch(() => ({ message: 'Unknown error' }));
+          throw new Error(error.message || error.error || `HTTP ${response.status}`);
+        }
+
+        const reader = response.body?.getReader();
+        if (!reader) {
+          throw new Error('No response body');
+        }
+
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        const processLine = (line: string) => {
+          if (line.startsWith('data:')) {
+            const jsonData = line.slice(5).trim();
+            if (jsonData) {
+              try {
+                return JSON.parse(jsonData);
+              } catch {
+                // Skip malformed JSON
+              }
+            }
+          }
+          return null;
+        };
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+
+            if (value) {
+              buffer += decoder.decode(value, { stream: true });
+            }
+
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+              const event = processLine(line);
+              if (event) {
+                yield event;
+                if (event.type === 'complete' || event.type === 'error') {
+                  return;
+                }
+              }
+            }
+
+            if (done) {
+              if (buffer.trim()) {
+                const event = processLine(buffer);
+                if (event) {
+                  yield event;
+                }
+              }
+              break;
+            }
+          }
+        } finally {
+          reader.cancel().catch(() => {});
+        }
+      } finally {
+        process.off('SIGINT', cleanup);
+        process.off('SIGTERM', cleanup);
+      }
     },
 
     async deploy(data: { platform: string; token: string; files: Record<string, string> }): Promise<Deployment> {

@@ -31,7 +31,7 @@ export const fixCommand = new Command('fix')
   .description('Fix detected gaps using AI agents')
   .argument('[path]', 'Project directory', '.')
   .option('-d, --dir <path>', 'Project directory (alternative to positional argument)')
-  .option('--yes', 'Auto-approve and apply all fixes')
+  .option('--dry-run', 'Preview fixes without applying them')
   .option('--all', 'Fix all issues (critical + warnings, skip info)')
   .option('--critical', 'Fix critical issues only')
   .option('-n, --count <number>', 'Number of issues to fix', '5')
@@ -139,31 +139,22 @@ export const fixCommand = new Command('fix')
       ui.divider();
       console.log();
 
-      // Confirm
-      if (!options.yes) {
-        const proceed = await ui.confirm(`Fix ${gapsToFix.length} issues?`, true);
-        if (!proceed) {
-          ui.cancel('Cancelled');
-          return;
-        }
-      }
-
       console.log();
 
-      // Fix each gap
+      // Fix each gap and apply immediately
       const progress = new ui.FixProgress(gapsToFix.length);
-      const results: Array<{
-        gap: Gap;
-        success: boolean;
-        filesWritten?: Record<string, string>;
-        error?: string;
-      }> = [];
+      let successCount = 0;
+      let failCount = 0;
+      let totalFilesWritten = 0;
 
       for (const gap of gapsToFix) {
         progress.start(gap.title);
 
         try {
-          const result = await api.agentFix({
+          let result: { success?: boolean; filesWritten?: Record<string, string>; error?: string } = {};
+
+          // Use streaming endpoint for real-time progress
+          for await (const event of api.agentFixStream({
             gap: {
               id: gap.id,
               category: gap.category,
@@ -181,88 +172,67 @@ export const fixCommand = new Command('fix')
               orm: analysis.stack.orm || null,
             },
             files: Object.fromEntries(files),
-          });
+          })) {
+            switch (event.type) {
+              case 'progress':
+                if (event.message) {
+                  progress.update(event.message);
+                }
+                break;
+              case 'complete':
+                result = {
+                  success: event.success,
+                  filesWritten: event.filesWritten,
+                  error: event.error,
+                };
+                break;
+              case 'error':
+                result = { success: false, error: event.message || event.error };
+                break;
+            }
+          }
 
-          if (result.success) {
-            progress.done(Object.keys(result.filesWritten || {}).length);
-            results.push({ gap, success: true, filesWritten: result.filesWritten });
+          if (result.success && result.filesWritten) {
+            const fileCount = Object.keys(result.filesWritten).length;
+
+            // Apply immediately unless --dry-run
+            if (!options.dryRun) {
+              for (const [filePath, content] of Object.entries(result.filesWritten)) {
+                const fullPath = resolve(projectRoot, filePath);
+                await mkdir(dirname(fullPath), { recursive: true });
+                await writeFile(fullPath, content, 'utf-8');
+                // Update in-memory files for subsequent fixes
+                files.set(filePath, content);
+              }
+            }
+
+            progress.done(fileCount);
+            successCount++;
+            totalFilesWritten += fileCount;
           } else {
             progress.fail(result.error);
-            results.push({ gap, success: false, error: result.error });
+            failCount++;
           }
         } catch (error) {
           const message = error instanceof Error ? error.message : 'Unknown error';
           progress.fail(message);
-          results.push({ gap, success: false, error: message });
+          failCount++;
         }
       }
 
       console.log();
-
-      // Collect files to write
-      const successfulFixes = results.filter(r => r.success && r.filesWritten);
-      if (successfulFixes.length === 0) {
-        ui.warning('No fixes were generated');
-        console.log();
-        return;
-      }
-
-      const allFilesToWrite = new Map<string, string>();
-      for (const { filesWritten } of successfulFixes) {
-        if (filesWritten) {
-          for (const [path, content] of Object.entries(filesWritten)) {
-            allFilesToWrite.set(path, content);
-          }
-        }
-      }
-
-      // Show files to write
-      ui.divider();
-      console.log();
-      console.log(`  ${allFilesToWrite.size} file${allFilesToWrite.size !== 1 ? 's' : ''} to write:`);
-      console.log();
-
-      for (const [filePath, content] of allFilesToWrite) {
-        console.log(`  \x1b[32m+\x1b[0m ${filePath}`);
-        const fullPath = resolve(projectRoot, filePath);
-        try {
-          const original = await readFile(fullPath, 'utf-8');
-          displayDiff(original, content);
-        } catch {
-          const lines = content.split('\n').length;
-          console.log(`    \x1b[90m(new file, ${lines} lines)\x1b[0m`);
-        }
-      }
-
-      console.log();
-      ui.divider();
-      console.log();
-
-      // Apply
-      const shouldApply = options.yes || await ui.confirm('Apply changes?', true);
-
-      if (shouldApply) {
-        const applySpinner = ui.spinner();
-        applySpinner.start('Applying...');
-
-        for (const [filePath, content] of allFilesToWrite) {
-          const fullPath = resolve(projectRoot, filePath);
-          await mkdir(dirname(fullPath), { recursive: true });
-          await writeFile(fullPath, content, 'utf-8');
-        }
-
-        applySpinner.stop('Done');
-        console.log();
-        ui.success(`Applied ${allFilesToWrite.size} file${allFilesToWrite.size !== 1 ? 's' : ''}`);
-      } else {
-        ui.info('Changes not applied');
-      }
 
       // Summary
-      const failed = results.filter(r => !r.success);
-      if (failed.length > 0) {
-        console.log();
-        ui.warning(`${failed.length} fix${failed.length !== 1 ? 'es' : ''} failed`);
+      if (successCount > 0) {
+        if (options.dryRun) {
+          ui.info(`Dry run: ${successCount} fixes would write ${totalFilesWritten} files`);
+        } else {
+          ui.success(`Applied ${successCount} fixes (${totalFilesWritten} files)`);
+        }
+      }
+
+      if (failCount > 0) {
+        ui.warning(`${failCount} fix${failCount !== 1 ? 'es' : ''} failed`);
       }
 
       // Remaining issues
