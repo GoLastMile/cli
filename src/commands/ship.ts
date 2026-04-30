@@ -4,6 +4,7 @@ import { writeFile, mkdir } from 'fs/promises';
 import { loadConfig } from '../lib/config.js';
 import { createApiClient } from '../lib/api-client.js';
 import { collectFiles } from '../lib/file-collector.js';
+import type { AnalyzeResponse, Gap } from '../lib/api-client.js';
 import * as ui from '../lib/ui.js';
 
 export const shipCommand = new Command('ship')
@@ -19,17 +20,35 @@ export const shipCommand = new Command('ship')
     ui.intro('LastMile Ship');
 
     try {
-      // Step 1: Analyze
+      // Step 1: Analyze using streaming to avoid timeout
       const s = ui.spinner();
       s.start('Collecting files...');
       const files = await collectFiles(projectRoot, {
         ignorePaths: config.analysis?.ignorePaths ?? [],
       });
-      s.message(`Analyzing ${files.size} files...`);
+      s.message(`Analyzing ${files.size} files via streaming...`);
 
-      const analysis = await api.analyze({
-        files: Object.fromEntries(files),
-      });
+      let analysis: AnalyzeResponse | undefined;
+
+      for await (const event of api.analyzeStream({ files: Object.fromEntries(files) })) {
+        switch (event.type) {
+          case 'phase':
+            s.message(event.message || event.phase || 'Analyzing...');
+            break;
+          case 'analyzer-start':
+            s.message(`Running ${(event.data as { type?: string })?.type || 'analyzer'} agent...`);
+            break;
+          case 'complete':
+            analysis = event.data as AnalyzeResponse;
+            break;
+          case 'error':
+            throw new Error(event.message || 'Analysis failed');
+        }
+      }
+
+      if (!analysis) {
+        throw new Error('Analysis did not complete');
+      }
 
       s.stop('Analysis complete');
 

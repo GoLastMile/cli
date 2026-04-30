@@ -5,6 +5,7 @@ import { loadConfig } from '../lib/config.js';
 import { createApiClient } from '../lib/api-client.js';
 import { collectFiles } from '../lib/file-collector.js';
 import { displayDiff } from '../lib/diff.js';
+import type { AnalyzeResponse, Gap } from '../lib/api-client.js';
 import * as ui from '../lib/ui.js';
 
 export const fixCommand = new Command('fix')
@@ -24,15 +25,50 @@ export const fixCommand = new Command('fix')
     try {
       // Collect files
       const s = ui.spinner();
-      s.start('Analyzing project...');
+      s.start('Collecting files...');
       const files = await collectFiles(projectRoot, {
         ignorePaths: config.analysis?.ignorePaths ?? [],
       });
+      s.message(`Analyzing ${files.size} files via streaming...`);
 
-      // Analyze to find gaps
-      const analysis = await api.analyze({
-        files: Object.fromEntries(files),
-      });
+      // Use streaming endpoint to avoid timeout
+      const gaps: Gap[] = [];
+      let analysis: AnalyzeResponse | undefined;
+
+      for await (const event of api.analyzeStream({ files: Object.fromEntries(files) })) {
+        switch (event.type) {
+          case 'phase':
+            s.message(event.message || event.phase || 'Analyzing...');
+            break;
+          case 'analyzer-start':
+            s.message(`Running ${(event.data as { type?: string })?.type || 'analyzer'} agent...`);
+            break;
+          case 'analyzer-complete':
+            // Collect gaps from each analyzer
+            const analyzerData = event.data as { gaps?: Gap[] };
+            if (analyzerData?.gaps) {
+              gaps.push(...analyzerData.gaps);
+            }
+            break;
+          case 'gap':
+            // Individual gap events
+            if (event.data) {
+              gaps.push(event.data as Gap);
+            }
+            break;
+          case 'complete':
+            analysis = event.data as AnalyzeResponse;
+            break;
+          case 'error':
+            throw new Error(event.message || 'Analysis failed');
+        }
+      }
+
+      if (!analysis) {
+        throw new Error('Analysis did not complete');
+      }
+
+      s.stop('Analysis complete');
 
       const autoFixableGaps = analysis.gaps.filter((g) => g.autoFixable);
 
