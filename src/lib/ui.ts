@@ -1,108 +1,519 @@
 /**
- * CLI UI using @clack/prompts
+ * Premium CLI UI
  *
- * Inspired by PostHog wizard patterns but using clack for simplicity.
+ * Clean, minimal design with visual polish
  */
 
 import * as p from '@clack/prompts';
+import { checkbox, confirm as inquirerConfirm, Separator } from '@inquirer/prompts';
 import chalk from 'chalk';
+import gradient from 'gradient-string';
+import boxen from 'boxen';
 
-// Icons (Unicode)
-const Icons = {
-  check: '✔',
-  cross: '✘',
-  warning: '⚠',
-  info: 'ℹ',
-  arrow: '▶',
-  bullet: '•',
-  diamond: '◆',
-  square: '■',
-  squareOpen: '□',
-};
-
-// Colors
-const Colors = {
+// Brand colors
+const brand = {
   primary: chalk.cyan,
   success: chalk.green,
   warning: chalk.yellow,
   error: chalk.red,
   dim: chalk.dim,
   bold: chalk.bold,
+  white: chalk.white,
 };
 
-export interface AgentStatus {
-  id: string;
+// Brand gradient
+const brandGradient = gradient(['#00d4ff', '#7c3aed']);
+
+// Symbols
+const sym = {
+  dot: '·',
+  arrow: '→',
+  check: '✓',
+  cross: '✗',
+  warning: '!',
+  bullet: '●',
+  circle: '○',
+  line: '─',
+  bar: '│',
+};
+
+/**
+ * Print the header with version
+ */
+export function header(version: string = '0.1.0') {
+  console.log();
+  console.log(`  ${brandGradient('▲ LastMile')}  ${brand.dim(`v${version}`)}`);
+  console.log();
+}
+
+/**
+ * Print a section divider
+ */
+export function divider() {
+  console.log(brand.dim(`  ${sym.line.repeat(50)}`));
+}
+
+/**
+ * Print detected stack in a nice format
+ */
+export function stack(info: {
+  framework?: string | null;
+  language?: string | null;
+  database?: string | null;
+  orm?: string | null;
+}) {
+  const parts: string[] = [];
+
+  if (info.framework) parts.push(info.framework);
+  if (info.language && !info.framework?.toLowerCase().includes(info.language.toLowerCase())) {
+    parts.push(info.language);
+  }
+  if (info.orm) parts.push(info.orm);
+  else if (info.database) parts.push(info.database);
+
+  if (parts.length > 0) {
+    console.log(`  ${brand.bold(parts.join(` ${brand.dim(sym.dot)} `))}`);
+    console.log();
+  }
+}
+
+/**
+ * Analyzer status display - updates in place
+ */
+export interface AnalyzerStatus {
   name: string;
   status: 'pending' | 'running' | 'done' | 'error';
   message?: string;
-  gapCount?: number;
-  iterations?: number;
-  tokensUsed?: number;
+  issueCount?: number;
 }
 
-/**
- * Format agent status for display
- */
-function formatAgentLine(agent: AgentStatus): string {
-  const icon = agent.status === 'done' ? Colors.success(Icons.check) :
-               agent.status === 'error' ? Colors.error(Icons.cross) :
-               agent.status === 'running' ? Colors.primary(Icons.arrow) :
-               Colors.dim(Icons.squareOpen);
+export class AnalyzerDisplay {
+  private analyzers: Map<string, AnalyzerStatus> = new Map();
+  private intervalId: ReturnType<typeof setInterval> | null = null;
+  private lineCount = 0;
+  private startTime = Date.now();
 
-  const name = agent.status === 'running' ? Colors.primary(agent.name) :
-               agent.status === 'done' ? Colors.success(agent.name) :
-               agent.status === 'error' ? Colors.error(agent.name) :
-               Colors.dim(agent.name);
-
-  let suffix = '';
-  if (agent.status === 'done' && agent.gapCount !== undefined) {
-    suffix = Colors.dim(` (${agent.gapCount} gaps)`);
-  } else if (agent.status === 'running' && agent.message) {
-    suffix = Colors.dim(` ${agent.message}`);
-  } else if (agent.status === 'error' && agent.message) {
-    suffix = Colors.error(` ${agent.message}`);
+  add(id: string, name: string) {
+    this.analyzers.set(id, { name, status: 'pending' });
   }
 
-  return `${icon} ${name}${suffix}`;
+  update(id: string, update: Partial<AnalyzerStatus>) {
+    const analyzer = this.analyzers.get(id);
+    if (analyzer) {
+      Object.assign(analyzer, update);
+    }
+  }
+
+  start() {
+    this.startTime = Date.now();
+    this.render();
+    this.intervalId = setInterval(() => this.render(), 150);
+  }
+
+  stop() {
+    if (this.intervalId) {
+      clearInterval(this.intervalId);
+      this.intervalId = null;
+    }
+    this.render(true);
+  }
+
+  private render(final = false) {
+    // Clear previous output
+    if (this.lineCount > 0) {
+      process.stdout.write(`\x1b[${this.lineCount}A\x1b[0J`);
+    }
+
+    const lines: string[] = [];
+
+    for (const [, analyzer] of this.analyzers) {
+      const icon = this.getIcon(analyzer.status);
+      const name = this.formatName(analyzer);
+      const status = this.formatStatus(analyzer);
+
+      lines.push(`  ${icon} ${name}${status}`);
+    }
+
+    // Add elapsed time if still running
+    if (!final) {
+      const elapsed = ((Date.now() - this.startTime) / 1000).toFixed(1);
+      lines.push('');
+      lines.push(brand.dim(`  ${elapsed}s`));
+    }
+
+    const output = lines.join('\n');
+    console.log(output);
+    this.lineCount = lines.length;
+  }
+
+  private getIcon(status: AnalyzerStatus['status']): string {
+    switch (status) {
+      case 'done':
+        return brand.success(sym.check);
+      case 'error':
+        return brand.error(sym.cross);
+      case 'running':
+        return brand.primary(sym.bullet);
+      default:
+        return brand.dim(sym.circle);
+    }
+  }
+
+  private formatName(analyzer: AnalyzerStatus): string {
+    const width = 16;
+    const name = analyzer.name.padEnd(width);
+
+    switch (analyzer.status) {
+      case 'running':
+        return brand.white(name);
+      case 'done':
+      case 'error':
+        return brand.dim(name);
+      default:
+        return brand.dim(name);
+    }
+  }
+
+  private formatStatus(analyzer: AnalyzerStatus): string {
+    switch (analyzer.status) {
+      case 'running':
+        return brand.dim(analyzer.message || 'analyzing...');
+      case 'done':
+        if (analyzer.issueCount !== undefined) {
+          if (analyzer.issueCount === 0) {
+            return brand.success('no issues');
+          }
+          return brand.warning(`${analyzer.issueCount} issue${analyzer.issueCount !== 1 ? 's' : ''}`);
+        }
+        return brand.success('done');
+      case 'error':
+        return brand.error(analyzer.message || 'failed');
+      default:
+        return '';
+    }
+  }
 }
 
 /**
- * Intro banner
+ * Results summary with score box
  */
-export function intro(title: string) {
+export function results(data: {
+  score: number;
+  critical: number;
+  warnings: number;
+  info: number;
+  fixable: number;
+}) {
   console.log();
-  p.intro(Colors.bold(title));
+  divider();
+  console.log();
+
+  // Score bar
+  const scoreWidth = 20;
+  const filled = Math.round((data.score / 100) * scoreWidth);
+  const empty = scoreWidth - filled;
+  const bar = brand.primary('█'.repeat(filled)) + brand.dim('░'.repeat(empty));
+
+  const scoreColor = data.score >= 80 ? brand.success :
+                     data.score >= 50 ? brand.warning :
+                     brand.error;
+
+  console.log(`  ${brand.dim('SCORE')}  ${bar}  ${scoreColor(data.score + '%')}`);
+  console.log();
+
+  // Issue counts
+  const parts: string[] = [];
+  if (data.critical > 0) parts.push(brand.error(`${data.critical} critical`));
+  if (data.warnings > 0) parts.push(brand.warning(`${data.warnings} warnings`));
+  if (data.info > 0) parts.push(brand.dim(`${data.info} info`));
+
+  if (parts.length > 0) {
+    console.log(`  ${parts.join(brand.dim(` ${sym.dot} `))}`);
+  }
+
+  if (data.fixable > 0) {
+    console.log(`  ${brand.success(`${data.fixable} auto-fixable`)}`);
+  }
+
+  console.log();
 }
 
 /**
- * Outro message
+ * Issue list grouped by category
  */
-export function outro(message: string) {
-  p.outro(message);
+export function issues(gaps: Array<{
+  category: string;
+  severity: 'critical' | 'warning' | 'info';
+  title: string;
+  filePath?: string;
+  autoFixable?: boolean;
+}>) {
+  // Group by category
+  const byCategory = new Map<string, typeof gaps>();
+  for (const gap of gaps) {
+    const existing = byCategory.get(gap.category) || [];
+    existing.push(gap);
+    byCategory.set(gap.category, existing);
+  }
+
+  for (const [category, categoryGaps] of byCategory) {
+    console.log(`  ${brand.bold(category)}`);
+
+    for (const gap of categoryGaps.slice(0, 5)) {
+      const icon = gap.severity === 'critical' ? brand.error(sym.cross) :
+                   gap.severity === 'warning' ? brand.warning(sym.warning) :
+                   brand.dim(sym.dot);
+
+      const title = gap.title.length > 55 ? gap.title.slice(0, 52) + '...' : gap.title;
+      const fixable = gap.autoFixable ? brand.dim(' [fix]') : '';
+
+      console.log(`    ${icon} ${title}${fixable}`);
+
+      if (gap.filePath) {
+        console.log(brand.dim(`      ${gap.filePath}`));
+      }
+    }
+
+    if (categoryGaps.length > 5) {
+      console.log(brand.dim(`    ... and ${categoryGaps.length - 5} more`));
+    }
+    console.log();
+  }
 }
 
 /**
- * Log messages
+ * Call to action
  */
-export const log = {
-  info: (message: string) => p.log.info(message),
-  success: (message: string) => p.log.success(message),
-  warning: (message: string) => p.log.warning(message),
-  error: (message: string) => p.log.error(message),
-  step: (message: string) => p.log.step(message),
-  message: (message: string) => p.log.message(message),
-};
+export function cta(message: string, command?: string) {
+  console.log();
+  if (command) {
+    console.log(`  ${brand.dim(sym.arrow)} ${message}  ${brand.primary(command)}`);
+  } else {
+    console.log(`  ${brand.dim(sym.arrow)} ${message}`);
+  }
+  console.log();
+}
 
 /**
- * Spinner for single operations
+ * Success message
+ */
+export function success(message: string) {
+  console.log(`  ${brand.success(sym.check)} ${message}`);
+}
+
+/**
+ * Error message
+ */
+export function error(message: string) {
+  console.log(`  ${brand.error(sym.cross)} ${message}`);
+}
+
+/**
+ * Warning message
+ */
+export function warning(message: string) {
+  console.log(`  ${brand.warning(sym.warning)} ${message}`);
+}
+
+/**
+ * Info message
+ */
+export function info(message: string) {
+  console.log(`  ${brand.dim(sym.dot)} ${message}`);
+}
+
+/**
+ * Progress spinner for single operations
  */
 export function spinner() {
   return p.spinner();
 }
 
 /**
- * Display analysis results
+ * Fix progress display
  */
+export class FixProgress {
+  private current = 0;
+  private total = 0;
+  private currentGap = '';
+  private lineCount = 0;
+
+  constructor(total: number) {
+    this.total = total;
+  }
+
+  start(gapTitle: string) {
+    this.current++;
+    this.currentGap = gapTitle.length > 45 ? gapTitle.slice(0, 42) + '...' : gapTitle;
+    this.render();
+  }
+
+  update(message: string) {
+    this.render(message);
+  }
+
+  done(filesWritten: number) {
+    this.clearLine();
+    const files = filesWritten === 1 ? '1 file' : `${filesWritten} files`;
+    console.log(`  ${brand.success(sym.check)} ${brand.dim(`[${this.current}/${this.total}]`)} ${this.currentGap} ${brand.dim(`(${files})`)}`);
+  }
+
+  fail(error?: string) {
+    this.clearLine();
+    console.log(`  ${brand.error(sym.cross)} ${brand.dim(`[${this.current}/${this.total}]`)} ${this.currentGap}`);
+    if (error) {
+      console.log(brand.dim(`      ${error}`));
+    }
+  }
+
+  private render(message?: string) {
+    this.clearLine();
+    const status = message || 'analyzing...';
+    console.log(`  ${brand.primary(sym.bullet)} ${brand.dim(`[${this.current}/${this.total}]`)} ${this.currentGap}`);
+    console.log(brand.dim(`      ${status}`));
+    this.lineCount = 2;
+  }
+
+  private clearLine() {
+    if (this.lineCount > 0) {
+      process.stdout.write(`\x1b[${this.lineCount}A\x1b[0J`);
+      this.lineCount = 0;
+    }
+  }
+}
+
+/**
+ * Issue selector with grouped checkboxes
+ */
+export interface GapChoice {
+  id: string;
+  title: string;
+  severity: 'critical' | 'warning' | 'info';
+  filePath?: string;
+}
+
+export async function selectGapsToFix(gaps: GapChoice[]): Promise<string[]> {
+  const critical = gaps.filter(g => g.severity === 'critical');
+  const warnings = gaps.filter(g => g.severity === 'warning');
+  const infoGaps = gaps.filter(g => g.severity === 'info');
+
+  // Build choices with separators for groups
+  const choices: Array<{ name: string; value: string; checked?: boolean } | typeof Separator.prototype> = [];
+
+  if (critical.length > 0) {
+    choices.push(new Separator(chalk.red.bold(`── Critical (${critical.length}) ──`)));
+    for (const gap of critical) {
+      const title = gap.title.length > 50 ? gap.title.slice(0, 47) + '...' : gap.title;
+      const hint = gap.filePath ? chalk.dim(` ${gap.filePath}`) : '';
+      choices.push({
+        name: `${chalk.red('●')} ${title}${hint}`,
+        value: gap.id,
+        checked: true,
+      });
+    }
+  }
+
+  if (warnings.length > 0) {
+    choices.push(new Separator(chalk.yellow.bold(`── Warnings (${warnings.length}) ──`)));
+    for (const gap of warnings) {
+      const title = gap.title.length > 50 ? gap.title.slice(0, 47) + '...' : gap.title;
+      const hint = gap.filePath ? chalk.dim(` ${gap.filePath}`) : '';
+      choices.push({
+        name: `${chalk.yellow('●')} ${title}${hint}`,
+        value: gap.id,
+        checked: true,
+      });
+    }
+  }
+
+  if (infoGaps.length > 0) {
+    choices.push(new Separator(chalk.gray.bold(`── Info (${infoGaps.length}) ──`)));
+    for (const gap of infoGaps) {
+      const title = gap.title.length > 50 ? gap.title.slice(0, 47) + '...' : gap.title;
+      const hint = gap.filePath ? chalk.dim(` ${gap.filePath}`) : '';
+      choices.push({
+        name: `${chalk.gray('●')} ${title}${hint}`,
+        value: gap.id,
+        checked: false, // Info not checked by default
+      });
+    }
+  }
+
+  console.log();
+  const selected = await checkbox({
+    message: 'Select issues to fix (space to toggle, enter to confirm)',
+    choices,
+    pageSize: 15,
+    loop: false,
+  });
+
+  return selected;
+}
+
+// Re-export clack prompts for compatibility
+export async function confirm(message: string, initialValue = true): Promise<boolean> {
+  const result = await p.confirm({ message: `  ${message}`, initialValue });
+  if (p.isCancel(result)) {
+    p.cancel('Cancelled');
+    process.exit(0);
+  }
+  return result;
+}
+
+export async function select<T extends string>(
+  message: string,
+  options: Array<{ value: T; label: string; hint?: string }>
+): Promise<T> {
+  const result = await p.select({ message: `  ${message}`, options });
+  if (p.isCancel(result)) {
+    p.cancel('Cancelled');
+    process.exit(0);
+  }
+  return result as T;
+}
+
+export async function multiselect<T extends string>(
+  message: string,
+  options: Array<{ value: T; label: string; hint?: string }>
+): Promise<T[]> {
+  const result = await p.multiselect({ message: `  ${message}`, options, required: true });
+  if (p.isCancel(result)) {
+    p.cancel('Cancelled');
+    process.exit(0);
+  }
+  return result as T[];
+}
+
+export function intro(title: string) {
+  console.log();
+  p.intro(brand.bold(title));
+}
+
+export function outro(message: string) {
+  p.outro(message);
+}
+
+export function cancel(message: string) {
+  p.cancel(message);
+}
+
+export function note(message: string, title?: string) {
+  p.note(message, title);
+}
+
+export const log = {
+  info: (msg: string) => p.log.info(msg),
+  success: (msg: string) => p.log.success(msg),
+  warning: (msg: string) => p.log.warning(msg),
+  error: (msg: string) => p.log.error(msg),
+  step: (msg: string) => p.log.step(msg),
+  message: (msg: string) => p.log.message(msg),
+};
+
+// Legacy compatibility - TaskList is now AnalyzerDisplay
+export const TaskList = AnalyzerDisplay;
+
+// Legacy compatibility
 export function displayResults(analysis: {
   readinessScore: number;
   gaps: Array<{
@@ -118,232 +529,21 @@ export function displayResults(analysis: {
     framework: string | null;
     database: string | null;
   };
-  projectAnalysis?: {
-    framework?: { name: string };
-    architecture?: { type: string };
-    database?: { type: string };
-  };
 }) {
-  console.log();
-
-  // Stack detection
-  if (analysis.projectAnalysis?.framework?.name) {
-    const framework = analysis.projectAnalysis.framework.name;
-    const arch = analysis.projectAnalysis.architecture?.type || 'unknown';
-    const db = analysis.projectAnalysis.database?.type || 'none';
-    p.log.info(`${Colors.bold('Stack:')} ${framework} | ${arch} | DB: ${db}`);
-  }
-
-  // Score
-  const score = analysis.readinessScore;
-  const scoreColor = score >= 80 ? Colors.success :
-                     score >= 50 ? Colors.warning :
-                     Colors.error;
-  const bar = renderProgressBar(score, 20);
-  p.log.message(`${Colors.bold('Readiness:')} ${bar} ${scoreColor(`${score}/100`)}`);
-
-  // Gaps summary
   const critical = analysis.gaps.filter(g => g.severity === 'critical').length;
   const warnings = analysis.gaps.filter(g => g.severity === 'warning').length;
-  const info = analysis.gaps.filter(g => g.severity === 'info').length;
+  const infoCount = analysis.gaps.filter(g => g.severity === 'info').length;
   const fixable = analysis.gaps.filter(g => g.autoFixable).length;
 
-  console.log();
-  p.log.message(Colors.bold('Issues Found:'));
+  results({
+    score: analysis.readinessScore,
+    critical,
+    warnings,
+    info: infoCount,
+    fixable,
+  });
 
-  if (critical > 0) {
-    p.log.error(`  ${critical} critical`);
+  if (analysis.gaps.length > 0) {
+    issues(analysis.gaps);
   }
-  if (warnings > 0) {
-    p.log.warning(`  ${warnings} warnings`);
-  }
-  if (info > 0) {
-    p.log.info(`  ${info} info`);
-  }
-
-  // List gaps by category
-  const byCategory = new Map<string, typeof analysis.gaps>();
-  for (const gap of analysis.gaps) {
-    const existing = byCategory.get(gap.category) || [];
-    existing.push(gap);
-    byCategory.set(gap.category, existing);
-  }
-
-  console.log();
-  for (const [category, gaps] of byCategory) {
-    console.log(Colors.bold(`  ${category}`));
-    for (const gap of gaps.slice(0, 5)) {
-      const icon = gap.severity === 'critical' ? Colors.error(Icons.cross) :
-                   gap.severity === 'warning' ? Colors.warning(Icons.warning) :
-                   Colors.dim(Icons.info);
-      const fixableTag = gap.autoFixable ? Colors.success(' [fixable]') : '';
-      console.log(`    ${icon} ${gap.title}${fixableTag}`);
-      if (gap.filePath) {
-        console.log(Colors.dim(`      ${gap.filePath}`));
-      }
-    }
-    if (gaps.length > 5) {
-      console.log(Colors.dim(`    ... and ${gaps.length - 5} more`));
-    }
-  }
-
-  // Next steps
-  if (fixable > 0) {
-    console.log();
-    p.log.success(`${fixable} issue(s) can be auto-fixed`);
-    console.log(Colors.dim(`  Run: ${Colors.primary('lastmile fix')}`));
-  }
-}
-
-/**
- * Render a progress bar
- */
-function renderProgressBar(value: number, width: number): string {
-  const filled = Math.round((value / 100) * width);
-  const empty = width - filled;
-  const filledChar = '█'; // Full block
-  const emptyChar = '░'; // Light shade
-
-  const color = value >= 80 ? Colors.success :
-                value >= 50 ? Colors.warning :
-                Colors.error;
-
-  return color(filledChar.repeat(filled)) + Colors.dim(emptyChar.repeat(empty));
-}
-
-/**
- * Task list for showing multiple parallel operations
- */
-export class TaskList {
-  private agents: Map<string, AgentStatus> = new Map();
-  private intervalId: ReturnType<typeof setInterval> | null = null;
-  private lastOutput: string = '';
-
-  constructor(private title?: string) {}
-
-  addAgent(id: string, name: string) {
-    this.agents.set(id, { id, name, status: 'pending' });
-  }
-
-  updateAgent(id: string, update: Partial<AgentStatus>) {
-    const agent = this.agents.get(id);
-    if (agent) {
-      Object.assign(agent, update);
-    }
-  }
-
-  start() {
-    this.render();
-    this.intervalId = setInterval(() => this.render(), 100);
-  }
-
-  stop() {
-    if (this.intervalId) {
-      clearInterval(this.intervalId);
-      this.intervalId = null;
-    }
-    this.render(true);
-  }
-
-  private render(final: boolean = false) {
-    const lines: string[] = [];
-
-    if (this.title) {
-      lines.push(Colors.bold(this.title));
-    }
-
-    const done = Array.from(this.agents.values()).filter(a => a.status === 'done').length;
-    const total = this.agents.size;
-
-    for (const agent of this.agents.values()) {
-      lines.push(formatAgentLine(agent));
-    }
-
-    if (!final && done < total) {
-      lines.push('');
-      lines.push(Colors.dim(`Progress: ${done}/${total} complete`));
-    }
-
-    const output = lines.join('\n');
-
-    // Clear previous output and write new
-    if (this.lastOutput) {
-      const lineCount = this.lastOutput.split('\n').length;
-      process.stdout.write(`\x1b[${lineCount}A\x1b[0J`);
-    }
-
-    console.log(output);
-    this.lastOutput = output;
-  }
-}
-
-/**
- * Confirm prompt
- */
-export async function confirm(message: string, initialValue: boolean = true): Promise<boolean> {
-  const result = await p.confirm({ message, initialValue });
-  if (p.isCancel(result)) {
-    p.cancel('Cancelled');
-    process.exit(0);
-  }
-  return result;
-}
-
-/**
- * Select prompt
- */
-export async function select<T extends string>(
-  message: string,
-  options: Array<{ value: T; label: string; hint?: string }>
-): Promise<T> {
-  const result = await p.select({ message, options });
-  if (p.isCancel(result)) {
-    p.cancel('Cancelled');
-    process.exit(0);
-  }
-  return result as T;
-}
-
-/**
- * Text input prompt
- */
-export async function text(
-  message: string,
-  options?: { placeholder?: string; defaultValue?: string }
-): Promise<string> {
-  const result = await p.text({ message, ...options });
-  if (p.isCancel(result)) {
-    p.cancel('Cancelled');
-    process.exit(0);
-  }
-  return result;
-}
-
-/**
- * Multi-select prompt
- */
-export async function multiselect<T extends string>(
-  message: string,
-  options: Array<{ value: T; label: string; hint?: string }>
-): Promise<T[]> {
-  const result = await p.multiselect({ message, options });
-  if (p.isCancel(result)) {
-    p.cancel('Cancelled');
-    process.exit(0);
-  }
-  return result as T[];
-}
-
-/**
- * Note box
- */
-export function note(message: string, title?: string) {
-  p.note(message, title);
-}
-
-/**
- * Cancel message
- */
-export function cancel(message: string) {
-  p.cancel(message);
 }

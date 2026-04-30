@@ -6,16 +6,6 @@ import { loadProjectConfig } from './init.js';
 import { collectFiles } from '../lib/file-collector.js';
 import * as ui from '../lib/ui.js';
 
-interface AgentProgress {
-  id: string;
-  name: string;
-  status: 'pending' | 'running' | 'done' | 'error';
-  message?: string;
-  gapCount?: number;
-  iterations?: number;
-  tokensUsed?: number;
-}
-
 export const analyzeCommand = new Command('analyze')
   .description('Analyze your project for production gaps')
   .argument('[path]', 'Directory to analyze', '.')
@@ -50,19 +40,24 @@ export const analyzeCommand = new Command('analyze')
       return;
     }
 
-    // Interactive mode
-    ui.intro('LastMile Analysis');
+    // Premium UI mode
+    ui.header();
 
     try {
       // Collect files
       const s = ui.spinner();
       s.start('Collecting files...');
       const files = await collectFiles(targetDir);
-      s.stop(`Found ${files.size} files`);
+      s.stop(`${files.size} files`);
 
-      // Track agent progress
-      const agents = new Map<string, AgentProgress>();
-      const taskList = new ui.TaskList('Running analyzer agents...');
+      // Set up analyzer display
+      const display = new ui.AnalyzerDisplay();
+      display.add('stack', 'Stack');
+      display.add('security', 'Security');
+      display.add('testing', 'Testing');
+      display.add('error-handling', 'Error Handling');
+      display.add('database', 'Database');
+      display.add('boilerplate', 'Production');
 
       // Stream analysis
       const stream = api.analyzeStream({
@@ -70,98 +65,122 @@ export const analyzeCommand = new Command('analyze')
         projectId,
       });
 
-      let analysis: any = null;
-      let stackDetected = false;
+      let analysis: {
+        readinessScore: number;
+        gaps: Array<{
+          id: string;
+          category: string;
+          severity: 'critical' | 'warning' | 'info';
+          title: string;
+          description?: string;
+          filePath?: string;
+          autoFixable?: boolean;
+          suggestedFix?: string;
+        }>;
+        stack: {
+          language: string | null;
+          framework: string | null;
+          database: string | null;
+          orm?: string | null;
+        };
+        projectAnalysis?: {
+          framework?: { name: string };
+          architecture?: { type: string };
+          database?: { type: string };
+        };
+      } | null = null;
+
+      const collectedGaps: typeof analysis['gaps'] = [];
+      let displayStarted = false;
 
       for await (const event of stream) {
-        if (event.type === 'start') {
-          // Analysis started
-        } else if (event.type === 'phase') {
-          if (event.phase === 'project-analysis') {
-            s.start('Detecting stack...');
-          } else if (event.phase === 'analyzers') {
-            if (!stackDetected) {
-              s.stop('Stack detected');
-              stackDetected = true;
-            }
-
-            // Initialize agents
-            if (event.data) {
-              const data = event.data as { analyzers: Array<{ id: string; name: string }> };
-              for (const analyzer of data.analyzers) {
-                agents.set(analyzer.id, {
-                  id: analyzer.id,
-                  name: analyzer.name,
-                  status: 'pending',
-                });
-                taskList.addAgent(analyzer.id, analyzer.name);
+        switch (event.type) {
+          case 'phase':
+            if (event.phase === 'project-analysis') {
+              display.update('stack', { status: 'running', message: 'detecting...' });
+              if (!displayStarted) {
+                display.start();
+                displayStarted = true;
               }
-              taskList.start();
+            } else if (event.phase === 'analyzers') {
+              // Mark all analyzer agents as pending (they'll start soon)
             }
-          }
-        } else if (event.type === 'project-analysis') {
-          // Stack detection update
-          if (event.message) {
-            s.message(event.message);
-          }
-        } else if (event.type === 'analyzer-start') {
-          if (event.data) {
-            const data = event.data as { analyzerId: string };
-            taskList.updateAgent(data.analyzerId, { status: 'running' });
-          }
-        } else if (event.type === 'analyzer-progress') {
-          if (event.data) {
-            const data = event.data as { analyzerId: string; message?: string };
-            // Extract tool name from message like "[testing] [0] listFiles"
-            const match = event.message?.match(/\[\d+\]\s+(\w+)/);
-            const toolName = match ? match[1] : undefined;
-            taskList.updateAgent(data.analyzerId, {
-              status: 'running',
-              message: toolName,
+            break;
+
+          case 'project-analysis-progress':
+            display.update('stack', { status: 'running', message: event.message });
+            break;
+
+          case 'project-analysis':
+            const paData = event.data as { framework?: { name: string } };
+            display.update('stack', {
+              status: 'done',
+              message: paData?.framework?.name || 'detected',
             });
-          }
-        } else if (event.type === 'analyzer-complete') {
-          if (event.data) {
-            const data = event.data as {
+            break;
+
+          case 'analyzer-start':
+            const startData = event.data as { analyzerId: string };
+            if (startData?.analyzerId) {
+              display.update(startData.analyzerId, { status: 'running', message: 'starting...' });
+            }
+            break;
+
+          case 'analyzer-progress':
+            const progressData = event.data as { analyzerId: string };
+            if (progressData?.analyzerId && event.message) {
+              display.update(progressData.analyzerId, {
+                status: 'running',
+                message: event.message,
+              });
+            }
+            break;
+
+          case 'analyzer-complete':
+            const completeData = event.data as {
               analyzerId: string;
               gapCount: number;
-              iterations?: number;
-              tokensUsed?: number;
               error?: string;
             };
-            if (data.error) {
-              taskList.updateAgent(data.analyzerId, {
-                status: 'error',
-                message: data.error,
-              });
-            } else {
-              taskList.updateAgent(data.analyzerId, {
-                status: 'done',
-                gapCount: data.gapCount,
-                iterations: data.iterations,
-                tokensUsed: data.tokensUsed,
-              });
+            if (completeData?.analyzerId) {
+              if (completeData.error) {
+                display.update(completeData.analyzerId, {
+                  status: 'error',
+                  message: completeData.error,
+                });
+              } else {
+                display.update(completeData.analyzerId, {
+                  status: 'done',
+                  issueCount: completeData.gapCount,
+                });
+              }
             }
-          }
-        } else if (event.type === 'gap') {
-          // Collect gaps
-          if (!analysis) analysis = { gaps: [] };
-          analysis.gaps.push(event.data);
-        } else if (event.type === 'complete') {
-          taskList.stop();
+            break;
 
-          const data = event.data as any;
-          const collectedGaps = analysis?.gaps || [];
-          analysis = {
-            readinessScore: data.readinessScore,
-            gaps: collectedGaps,
-            stack: data.stack,
-            stackConfidence: data.stackConfidence,
-            projectAnalysis: data.projectAnalysis,
-          };
-        } else if (event.type === 'error') {
-          taskList.stop();
-          throw new Error(event.message || 'Analysis failed');
+          case 'gap':
+            if (event.data) {
+              collectedGaps.push(event.data as typeof collectedGaps[0]);
+            }
+            break;
+
+          case 'complete':
+            display.stop();
+            const data = event.data as {
+              readinessScore: number;
+              stack: typeof analysis['stack'];
+              projectAnalysis?: typeof analysis['projectAnalysis'];
+            };
+            analysis = {
+              readinessScore: data.readinessScore,
+              gaps: collectedGaps,
+              stack: data.stack,
+              projectAnalysis: data.projectAnalysis,
+            };
+            break;
+
+          case 'error':
+            display.stop();
+            throw new Error(event.message || 'Analysis failed');
         }
       }
 
@@ -169,29 +188,36 @@ export const analyzeCommand = new Command('analyze')
         throw new Error('Analysis failed: no response received');
       }
 
-      // Display results
+      // Show stack
+      ui.stack({
+        framework: analysis.projectAnalysis?.framework?.name || analysis.stack.framework,
+        language: analysis.stack.language,
+        database: analysis.stack.database,
+        orm: analysis.stack.orm,
+      });
+
+      // Show results
       ui.displayResults(analysis);
 
-      // Outro
-      const fixable = analysis.gaps.filter((g: any) => g.autoFixable).length;
+      // Call to action
+      const fixable = analysis.gaps.filter(g => g.autoFixable).length;
       if (fixable > 0) {
-        ui.outro(`Run 'lastmile fix' to auto-fix ${fixable} issue(s)`);
+        ui.cta(`Auto-fix ${fixable} issues`, 'lastmile fix');
       } else if (analysis.gaps.length === 0) {
-        ui.outro('Your project looks production-ready!');
-      } else {
-        ui.outro('Analysis complete');
+        ui.success('Your project looks production-ready!');
+        console.log();
       }
 
     } catch (error) {
       if (error instanceof Error) {
         if (error.message.includes('fetch failed') || error.message.includes('ECONNREFUSED')) {
-          ui.log.error('Could not connect to LastMile API');
-          ui.log.info('Make sure the backend is running: cd backend && pnpm dev');
+          ui.error('Could not connect to LastMile API');
+          ui.info('Make sure the backend is running: cd backend && pnpm dev');
         } else {
-          ui.log.error(error.message);
+          ui.error(error.message);
         }
       } else {
-        ui.log.error('Unknown error occurred');
+        ui.error('Unknown error occurred');
       }
       process.exit(1);
     }
