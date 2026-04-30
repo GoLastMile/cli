@@ -1,14 +1,10 @@
 import { Command } from 'commander';
-import { resolve } from 'path';
-import ora from 'ora';
-import chalk from 'chalk';
-import { confirm, select } from '@inquirer/prompts';
+import { resolve, dirname } from 'path';
+import { writeFile, mkdir } from 'fs/promises';
 import { loadConfig } from '../lib/config.js';
 import { createApiClient } from '../lib/api-client.js';
 import { collectFiles } from '../lib/file-collector.js';
-import { formatGaps } from '../lib/output.js';
-import { displayDiff, applyFixes } from '../lib/diff.js';
-import { buildLocalFixes } from '../lib/fix-engine.js';
+import * as ui from '../lib/ui.js';
 
 export const shipCommand = new Command('ship')
   .description('Analyze, fix, and deploy in one command')
@@ -20,118 +16,156 @@ export const shipCommand = new Command('ship')
     const api = createApiClient(config);
     const projectRoot = resolve(process.cwd(), options.dir);
 
-    console.log(chalk.bold('\n🚀 LastMile Ship\n'));
+    ui.intro('LastMile Ship');
 
-    // Step 1: Analyze
-    let spinner = ora('Collecting files...').start();
-    const files = await collectFiles(projectRoot, {
-      ignorePaths: config.analysis?.ignorePaths ?? [],
-    });
-    spinner.text = `Analyzing ${files.size} files...`;
+    try {
+      // Step 1: Analyze
+      const s = ui.spinner();
+      s.start('Collecting files...');
+      const files = await collectFiles(projectRoot, {
+        ignorePaths: config.analysis?.ignorePaths ?? [],
+      });
+      s.message(`Analyzing ${files.size} files...`);
 
-    const analysis = await api.analyze({
-      files: Object.fromEntries(files),
-    });
-
-    spinner.succeed('Analysis complete');
-
-    const criticalGaps = analysis.gaps.filter(g => g.severity === 'critical');
-    const warningGaps = analysis.gaps.filter(g => g.severity === 'warning');
-
-    if (analysis.gaps.length > 0) {
-      console.log(formatGaps(analysis.gaps));
-    }
-    console.log(chalk.bold(`\nFound ${criticalGaps.length} critical, ${warningGaps.length} warnings\n`));
-
-    if (analysis.gaps.length === 0) {
-      console.log(chalk.green('✅ No gaps detected! Your project looks production-ready.\n'));
-    } else {
-      // Step 2: Generate and apply fixes
-      const shouldFix = options.yes || await confirm({
-        message: 'Generate and apply fixes?',
-        default: true,
+      const analysis = await api.analyze({
+        files: Object.fromEntries(files),
       });
 
-      if (shouldFix) {
-        spinner = ora('Generating local fixes...').start();
-        const fixes = buildLocalFixes(projectRoot, files, analysis);
-        spinner.succeed(`Generated ${fixes.length} local patch(es)`);
+      s.stop('Analysis complete');
 
-        if (fixes.length === 0) {
-          console.log(chalk.dim('\nNo local patches for these gaps yet (e.g. .gitignore).\n'));
-        } else {
-          for (const fix of fixes) {
-            console.log(chalk.cyan(`\n${fix.filePath}`));
-            displayDiff(fix.originalContent, fix.newContent);
+      const criticalGaps = analysis.gaps.filter(g => g.severity === 'critical');
+      const warningGaps = analysis.gaps.filter(g => g.severity === 'warning');
+      const autoFixableGaps = analysis.gaps.filter(g => g.autoFixable);
+
+      ui.log.message(`Found ${criticalGaps.length} critical, ${warningGaps.length} warnings`);
+
+      if (analysis.gaps.length === 0) {
+        ui.log.success('No gaps detected! Your project looks production-ready.');
+      } else {
+        // Step 2: Fix
+        const shouldFix = options.yes || await ui.confirm('Fix issues before deploying?', true);
+
+        if (shouldFix && autoFixableGaps.length > 0) {
+          const taskList = new ui.TaskList('Fixing gaps...');
+          for (const gap of autoFixableGaps) {
+            taskList.addAgent(gap.id, gap.title);
+          }
+          taskList.start();
+
+          let fixedCount = 0;
+
+          for (const gap of autoFixableGaps) {
+            taskList.updateAgent(gap.id, { status: 'running' });
+
+            try {
+              const result = await api.agentFix({
+                gap: {
+                  id: gap.id,
+                  category: gap.category,
+                  severity: gap.severity,
+                  title: gap.title,
+                  description: gap.description || '',
+                  filePath: gap.filePath,
+                  autoFixable: true,
+                  suggestedFix: gap.suggestedFix,
+                },
+                stack: {
+                  language: analysis.stack.language,
+                  framework: analysis.stack.framework || null,
+                  database: analysis.stack.database || null,
+                  orm: analysis.stack.orm || null,
+                },
+                files: Object.fromEntries(files),
+              });
+
+              if (result.success && result.filesWritten) {
+                for (const [filePath, content] of Object.entries(result.filesWritten)) {
+                  const fullPath = resolve(projectRoot, filePath);
+                  await mkdir(dirname(fullPath), { recursive: true });
+                  await writeFile(fullPath, content, 'utf-8');
+                }
+                fixedCount++;
+                taskList.updateAgent(gap.id, { status: 'done' });
+              } else {
+                taskList.updateAgent(gap.id, {
+                  status: 'error',
+                  message: result.error || 'Failed',
+                });
+              }
+            } catch (error) {
+              taskList.updateAgent(gap.id, {
+                status: 'error',
+                message: error instanceof Error ? error.message : 'Unknown error',
+              });
+            }
           }
 
-          const shouldApply = options.yes || await confirm({
-            message: 'Apply these fixes?',
-            default: true,
-          });
+          taskList.stop();
 
-          if (shouldApply) {
-            spinner = ora('Applying fixes...').start();
-            await applyFixes(fixes);
-            spinner.succeed('Fixes applied');
+          if (fixedCount > 0) {
+            ui.log.success(`Applied ${fixedCount} fix(es)`);
           }
         }
       }
-    }
 
-    // Step 3: Deploy
-    const shouldDeploy = options.yes || await confirm({
-      message: 'Deploy to production?',
-      default: true,
-    });
+      // Step 3: Deploy
+      const shouldDeploy = options.yes || await ui.confirm('Deploy to production?', true);
 
-    if (shouldDeploy) {
-      let platform = options.platform || config.deployment?.platform;
+      if (shouldDeploy) {
+        let platform = options.platform || config.deployment?.platform;
 
-      if (!platform) {
-        platform = await select({
-          message: 'Select deployment platform:',
-          choices: [
-            { name: 'Railway', value: 'railway' },
-            { name: 'Vercel', value: 'vercel' },
-          ],
+        if (!platform) {
+          platform = await ui.select('Select deployment platform:', [
+            { value: 'railway', label: 'Railway' },
+            { value: 'vercel', label: 'Vercel' },
+          ]);
+        }
+
+        const tokenKey = platform === 'vercel' ? 'vercelToken' : 'railwayToken';
+        const token = config.deployment?.[tokenKey as keyof typeof config.deployment];
+
+        if (!token) {
+          ui.log.warning(`No ${platform} token configured. Skipping deployment.`);
+          ui.log.info(`Add ${tokenKey} to .lastmilerc or run 'lastmile init'`);
+          return;
+        }
+
+        const s = ui.spinner();
+        s.start(`Deploying to ${platform}...`);
+
+        const deployment = await api.deploy({
+          platform,
+          token: token as string,
+          files: Object.fromEntries(
+            await collectFiles(projectRoot, { ignorePaths: config.analysis?.ignorePaths ?? [] })
+          ),
         });
+
+        let status = deployment.status;
+        while (status === 'pending' || status === 'building') {
+          await new Promise(resolve => setTimeout(resolve, 3000));
+          const updated = await api.getDeployment(deployment.id);
+          status = updated.status;
+          s.message(`Deploying... (${status})`);
+        }
+
+        if (status === 'success') {
+          s.stop('Deployed!');
+          ui.log.success(`Your app is live at: ${deployment.url}`);
+        } else {
+          s.stop('Deployment failed');
+          ui.log.error(deployment.error || 'Unknown error');
+        }
       }
 
-      const tokenKey = platform === 'vercel' ? 'vercelToken' : 'railwayToken';
-      const token = config.deployment?.[tokenKey as keyof typeof config.deployment];
+      ui.outro('Ship complete');
 
-      if (!token) {
-        console.log(chalk.yellow(`\nNo ${platform} token configured. Skipping deployment.`));
-        console.log(chalk.dim(`Add ${tokenKey} to .lastmilerc or run ${chalk.cyan('lastmile init')}\n`));
-        return;
-      }
-
-      spinner = ora(`Deploying to ${platform}...`).start();
-
-      const deployment = await api.deploy({
-        platform,
-        token: token as string,
-        files: Object.fromEntries(
-          await collectFiles(projectRoot, { ignorePaths: config.analysis?.ignorePaths ?? [] })
-        ),
-      });
-
-      let status = deployment.status;
-      while (status === 'pending' || status === 'building') {
-        await new Promise(resolve => setTimeout(resolve, 3000));
-        const updated = await api.getDeployment(deployment.id);
-        status = updated.status;
-        spinner.text = `Deploying... (${status})`;
-      }
-
-      if (status === 'success') {
-        spinner.succeed(chalk.green('Deployed!'));
-        console.log(chalk.bold(`\n🎉 Ship complete! Your app is live at:\n`));
-        console.log(chalk.cyan(`   ${deployment.url}\n`));
+    } catch (error) {
+      if (error instanceof Error) {
+        ui.log.error(error.message);
       } else {
-        spinner.fail('Deployment failed');
-        console.log(chalk.red(`\nError: ${deployment.error}\n`));
+        ui.log.error('Unknown error occurred');
       }
+      process.exit(1);
     }
   });

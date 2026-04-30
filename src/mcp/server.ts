@@ -422,44 +422,58 @@ async function handleGenerateFixes(
     });
   }
 
-  // Generate fixes
-  const result = await api.generateStatelessFixes({
-    gaps: gapsToFix.map((g) => ({
-      id: g.id,
-      category: g.category,
-      severity: g.severity,
-      title: g.title,
-      description: g.description,
-      filePath: g.filePath,
-      lineNumber: g.lineNumber,
-      autoFixable: g.autoFixable ?? false,
-      suggestedFix: g.suggestedFix,
-    })),
-    stack: {
-      language: analysis.stack.language,
-      framework: analysis.stack.framework ?? null,
-      database: analysis.stack.database ?? null,
-      orm: analysis.stack.orm ?? null,
-      packageManager: analysis.stack.packageManager ?? null,
-    },
-    files,
-  });
+  // Generate fixes using AI agent (one gap at a time)
+  const results: Array<{
+    gapId: string;
+    success: boolean;
+    summary?: string;
+    filesWritten?: Record<string, string>;
+    error?: string;
+  }> = [];
+
+  for (const gap of gapsToFix) {
+    const result = await api.agentFix({
+      gap: {
+        id: gap.id,
+        category: gap.category,
+        severity: gap.severity,
+        title: gap.title,
+        description: gap.description,
+        filePath: gap.filePath,
+        lineNumber: gap.lineNumber,
+        autoFixable: gap.autoFixable ?? false,
+        suggestedFix: gap.suggestedFix,
+      },
+      stack: {
+        language: analysis.stack.language,
+        framework: analysis.stack.framework ?? null,
+        database: analysis.stack.database ?? null,
+        orm: analysis.stack.orm ?? null,
+      },
+      files,
+    });
+
+    results.push({
+      gapId: gap.id,
+      success: result.success,
+      summary: result.summary,
+      filesWritten: result.filesWritten,
+      error: result.error,
+    });
+  }
+
+  const successCount = results.filter((r) => r.success).length;
 
   return JSON.stringify({
     totalGaps: gapsToFix.length,
-    fixesGenerated: result.fixesGenerated,
-    fixes: result.fixes.map((f) => ({
-      gapId: f.gapId,
-      summary: f.summary,
-      risk: f.risk,
-      changes: f.changes.map((c) => ({
-        filePath: c.filePath,
-        operation: c.operation,
-        // Include content preview (first 500 chars) to avoid huge responses
-        contentPreview: c.newContent?.substring(0, 500) + (c.newContent && c.newContent.length > 500 ? '...' : ''),
-      })),
+    fixesGenerated: successCount,
+    results: results.map((r) => ({
+      gapId: r.gapId,
+      success: r.success,
+      summary: r.summary,
+      filesWritten: r.filesWritten ? Object.keys(r.filesWritten) : [],
+      error: r.error,
     })),
-    skipped: result.skipped,
   });
 }
 

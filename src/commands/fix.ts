@@ -1,94 +1,35 @@
 import { Command } from 'commander';
 import { resolve, dirname } from 'path';
-import { writeFile, mkdir } from 'fs/promises';
-import ora from 'ora';
-import chalk from 'chalk';
-import { confirm } from '@inquirer/prompts';
+import { writeFile, mkdir, readFile } from 'fs/promises';
 import { loadConfig } from '../lib/config.js';
-import { createApiClient, type GeneratedFix, type FileChange } from '../lib/api-client.js';
-import type { FixRisk } from '../lib/types.js';
+import { createApiClient } from '../lib/api-client.js';
 import { collectFiles } from '../lib/file-collector.js';
-import { displayDiff, applyFixes } from '../lib/diff.js';
-import { buildLocalFixes, type LocalFix } from '../lib/fix-engine.js';
-
-/**
- * Extended local fix with risk info
- */
-interface LocalFixWithRisk extends LocalFix {
-  risk: FixRisk;
-  canAutoApply: boolean;
-}
-
-/**
- * Convert backend fix to local fix format for unified handling
- */
-function convertToLocalFixes(
-  projectRoot: string,
-  backendFixes: GeneratedFix[],
-  gaps: Array<{ id: string; title: string }>
-): LocalFixWithRisk[] {
-  const fixes: LocalFixWithRisk[] = [];
-  const gapMap = new Map(gaps.map((g) => [g.id, g]));
-
-  for (const fix of backendFixes) {
-    const gap = gapMap.get(fix.gapId);
-
-    for (const change of fix.changes) {
-      const absolutePath = resolve(projectRoot, change.filePath);
-      fixes.push({
-        id: `backend-${fix.gapId}-${change.filePath}`,
-        gapId: fix.gapId,
-        gapTitle: gap?.title || 'Unknown gap',
-        filePath: absolutePath,
-        originalContent: change.originalContent,
-        newContent: change.newContent,
-        description: change.description,
-        risk: fix.risk || 'review',
-        canAutoApply: fix.canAutoApply ?? false,
-      });
-    }
-  }
-
-  return fixes;
-}
-
-/**
- * Apply fixes that create new files (need to create directories first)
- */
-async function applyBackendFixes(fixes: LocalFix[]): Promise<void> {
-  for (const fix of fixes) {
-    // Ensure directory exists
-    const dir = dirname(fix.filePath);
-    await mkdir(dir, { recursive: true });
-
-    // Write the file
-    await writeFile(fix.filePath, fix.newContent, 'utf-8');
-  }
-}
+import { displayDiff } from '../lib/diff.js';
+import * as ui from '../lib/ui.js';
 
 export const fixCommand = new Command('fix')
-  .description('Generate and apply fixes for detected gaps')
+  .description('Fix detected gaps using AI agents')
   .argument('[path]', 'Project directory', '.')
   .option('-d, --dir <path>', 'Project directory (alternative to positional argument)')
-  .option('--apply', 'Apply fixes directly to files')
-  .option('--yes', 'Skip confirmation prompts')
-  .option('--local-only', 'Only use local fix engine (skip backend)')
+  .option('--yes', 'Auto-approve and apply all fixes')
+  .option('--gap <id>', 'Fix a specific gap by ID')
   .action(async (pathArg, options) => {
     const config = await loadConfig();
     const api = createApiClient(config);
-    // Support both positional argument and -d option (positional takes precedence)
     const targetDir = pathArg !== '.' ? pathArg : (options.dir || '.');
     const projectRoot = resolve(process.cwd(), targetDir);
 
-    const spinner = ora('Analyzing project for fixable gaps...').start();
+    ui.intro('LastMile Fix');
 
     try {
-      // Collect project files
+      // Collect files
+      const s = ui.spinner();
+      s.start('Analyzing project...');
       const files = await collectFiles(projectRoot, {
         ignorePaths: config.analysis?.ignorePaths ?? [],
       });
 
-      // Analyze project
+      // Analyze to find gaps
       const analysis = await api.analyze({
         files: Object.fromEntries(files),
       });
@@ -96,279 +37,185 @@ export const fixCommand = new Command('fix')
       const autoFixableGaps = analysis.gaps.filter((g) => g.autoFixable);
 
       if (autoFixableGaps.length === 0) {
-        spinner.succeed('Analysis complete');
-        console.log(chalk.dim('\nNo auto-fixable gaps found. Your project is looking good!\n'));
+        s.stop('No fixable gaps found');
+        ui.log.success('Your project is looking good!');
+        ui.outro('Nothing to fix');
         return;
       }
 
-      spinner.text = `Found ${autoFixableGaps.length} fixable gap(s). Generating fixes...`;
-
-      let backendFixes: GeneratedFix[] = [];
-      let localFixes: LocalFix[] = [];
-      const installCommands: string[] = [];
-      const notes: string[] = [];
-
-      // Try backend fix generation (stateless - no DB required)
-      // Process gaps in batches of 3 to avoid socket timeouts
-      const BATCH_SIZE = 3;
-      if (!options.localOnly) {
-        const gapBatches: typeof autoFixableGaps[] = [];
-        for (let i = 0; i < autoFixableGaps.length; i += BATCH_SIZE) {
-          gapBatches.push(autoFixableGaps.slice(i, i + BATCH_SIZE));
+      // Filter to specific gap if requested
+      let gapsToFix = autoFixableGaps;
+      if (options.gap) {
+        gapsToFix = autoFixableGaps.filter(g =>
+          g.id === options.gap || g.id.startsWith(options.gap)
+        );
+        if (gapsToFix.length === 0) {
+          s.stop('Gap not found');
+          ui.log.error(`No gap matching: ${options.gap}`);
+          process.exit(1);
         }
+      }
+
+      s.stop(`Found ${gapsToFix.length} fixable gap(s)`);
+
+      // Show gaps to fix
+      ui.log.message('Gaps to fix:');
+      for (const gap of gapsToFix) {
+        const severity = gap.severity === 'critical' ? '🔴' :
+                        gap.severity === 'warning' ? '🟡' : '🔵';
+        console.log(`  ${severity} ${gap.title}`);
+        if (gap.filePath) {
+          console.log(`     ${gap.filePath}`);
+        }
+      }
+      console.log();
+
+      // Confirm
+      if (!options.yes) {
+        const proceed = await ui.confirm(
+          `Start AI agent to fix ${gapsToFix.length} gap(s)?`,
+          true
+        );
+        if (!proceed) {
+          ui.cancel('Cancelled');
+          return;
+        }
+      }
+
+      // Fix each gap
+      const taskList = new ui.TaskList('Fixing gaps...');
+      for (const gap of gapsToFix) {
+        taskList.addAgent(gap.id, gap.title);
+      }
+      taskList.start();
+
+      const results: Array<{
+        gap: typeof gapsToFix[0];
+        success: boolean;
+        filesWritten?: Record<string, string>;
+        error?: string;
+      }> = [];
+
+      for (const gap of gapsToFix) {
+        taskList.updateAgent(gap.id, { status: 'running' });
 
         try {
-          for (let i = 0; i < gapBatches.length; i++) {
-            const batch = gapBatches[i];
-            if (process.env.DEBUG) {
-              console.log(`Processing batch ${i + 1}/${gapBatches.length} (${batch.length} gaps)`);
-            }
+          const result = await api.agentFix({
+            gap: {
+              id: gap.id,
+              category: gap.category,
+              severity: gap.severity,
+              title: gap.title,
+              description: gap.description || '',
+              filePath: gap.filePath,
+              autoFixable: true,
+              suggestedFix: gap.suggestedFix,
+            },
+            stack: {
+              language: analysis.stack.language,
+              framework: analysis.stack.framework || null,
+              database: analysis.stack.database || null,
+              orm: analysis.stack.orm || null,
+            },
+            files: Object.fromEntries(files),
+          });
 
-            const result = await api.generateStatelessFixes({
-              gaps: batch.map((g) => ({
-                id: g.id,
-                category: g.category,
-                severity: g.severity,
-                title: g.title,
-                description: g.description || '',
-                filePath: g.filePath,
-                lineNumber: g.lineNumber || g.line,
-                autoFixable: g.autoFixable ?? true,
-                suggestedFix: g.suggestedFix,
-              })),
-              stack: {
-                language: analysis.stack.language,
-                framework: analysis.stack.framework || null,
-                database: analysis.stack.database || null,
-                orm: analysis.stack.orm || null,
-              },
-              files: Object.fromEntries(files),
+          if (result.success) {
+            taskList.updateAgent(gap.id, {
+              status: 'done',
+              message: `${Object.keys(result.filesWritten || {}).length} files`,
             });
-
-            backendFixes.push(...result.fixes);
-
-            // Collect install commands and notes
-            for (const fix of result.fixes) {
-              installCommands.push(...fix.installCommands);
-              if (fix.notes) {
-                notes.push(...fix.notes);
-              }
-            }
-          }
-
-          // Find gaps not covered by backend
-          const coveredGapIds = new Set(backendFixes.map((f) => f.gapId));
-          const uncoveredGaps = autoFixableGaps.filter((g) => !coveredGapIds.has(g.id));
-
-          // Use local fixes for uncovered gaps (like .gitignore)
-          if (uncoveredGaps.length > 0) {
-            const localAnalysis = {
-              ...analysis,
-              gaps: uncoveredGaps,
-            };
-            localFixes = buildLocalFixes(projectRoot, files, localAnalysis);
+            results.push({ gap, success: true, filesWritten: result.filesWritten });
+          } else {
+            taskList.updateAgent(gap.id, {
+              status: 'error',
+              message: result.error || 'Failed',
+            });
+            results.push({ gap, success: false, error: result.error });
           }
         } catch (error) {
-          // Backend fix generation failed, fall back to local only
-          console.log(
-            chalk.dim('\n(Backend fix generation unavailable, using local fixes only)')
-          );
-          localFixes = buildLocalFixes(projectRoot, files, analysis);
-        }
-      } else {
-        // Local-only mode
-        localFixes = buildLocalFixes(projectRoot, files, analysis);
-      }
-
-      // Convert backend fixes to local fix format
-      const backendAsLocalFixes = convertToLocalFixes(
-        projectRoot,
-        backendFixes,
-        autoFixableGaps
-      );
-
-      // Convert local fixes to include risk (local fixes are always 'safe')
-      const localFixesWithRisk: LocalFixWithRisk[] = localFixes.map(fix => ({
-        ...fix,
-        risk: 'safe' as FixRisk,
-        canAutoApply: true,
-      }));
-
-      // Combine all fixes
-      const allFixes = [...backendAsLocalFixes, ...localFixesWithRisk];
-
-      // Deduplicate by file path (prefer backend fixes)
-      const seenPaths = new Set<string>();
-      const dedupedFixes: LocalFixWithRisk[] = [];
-      for (const fix of allFixes) {
-        if (!seenPaths.has(fix.filePath)) {
-          seenPaths.add(fix.filePath);
-          dedupedFixes.push(fix);
+          const message = error instanceof Error ? error.message : 'Unknown error';
+          taskList.updateAgent(gap.id, { status: 'error', message });
+          results.push({ gap, success: false, error: message });
         }
       }
 
-      // Group fixes by risk level
-      const safeFixes = dedupedFixes.filter(f => f.risk === 'safe');
-      const reviewFixes = dedupedFixes.filter(f => f.risk === 'review');
-      const carefulFixes = dedupedFixes.filter(f => f.risk === 'careful');
+      taskList.stop();
 
-      const totalFixed = dedupedFixes.length;
-      const notFixable = autoFixableGaps.length - backendFixes.length - localFixes.length;
+      // Show results and apply fixes
+      const successfulFixes = results.filter(r => r.success && r.filesWritten);
 
-      spinner.succeed(
-        totalFixed > 0
-          ? `Generated ${totalFixed} fix(es): ${safeFixes.length} safe, ${reviewFixes.length} need review, ${carefulFixes.length} need careful review`
-          : 'Analysis complete'
-      );
-
-      if (totalFixed === 0) {
-        console.log(
-          chalk.yellow(
-            `\n${autoFixableGaps.length} gap(s) are marked as fixable but no fixes could be generated yet.\n`
-          )
-        );
+      if (successfulFixes.length === 0) {
+        ui.log.warning('No fixes were generated');
+        ui.outro('Try running with --verbose for more details');
         return;
       }
 
-      // Display safe fixes (minimal output)
-      if (safeFixes.length > 0) {
-        console.log(chalk.bold.green('\n✓ Safe Fixes (auto-applicable)\n'));
-        for (const fix of safeFixes) {
-          console.log(chalk.green(`  + ${fix.filePath.replace(projectRoot + '/', '')}`));
-          console.log(chalk.dim(`    ${fix.description}`));
-        }
-      }
-
-      // Display review fixes (show diffs)
-      if (reviewFixes.length > 0) {
-        console.log(chalk.bold.yellow('\n⚠ Fixes Needing Review\n'));
-        for (const fix of reviewFixes) {
-          console.log(chalk.yellow(`${fix.filePath.replace(projectRoot + '/', '')}`));
-          console.log(chalk.dim(fix.description));
-          displayDiff(fix.originalContent, fix.newContent);
-          console.log();
-        }
-      }
-
-      // Display careful fixes (show diffs with warnings)
-      if (carefulFixes.length > 0) {
-        console.log(chalk.bold.red('\n⚠ Security-Sensitive Fixes (review carefully)\n'));
-        for (const fix of carefulFixes) {
-          console.log(chalk.red(`${fix.filePath.replace(projectRoot + '/', '')}`));
-          console.log(chalk.dim(fix.description));
-          displayDiff(fix.originalContent, fix.newContent);
-          console.log();
-        }
-      }
-
-      // Show install commands
-      const uniqueInstallCommands = [...new Set(installCommands)];
-      if (uniqueInstallCommands.length > 0) {
-        console.log(chalk.bold.blue('\n--- Install Commands ---\n'));
-        for (const cmd of uniqueInstallCommands) {
-          console.log(chalk.cyan(`  ${cmd}`));
-        }
-        console.log();
-      }
-
-      // Show notes
-      if (notes.length > 0) {
-        console.log(chalk.bold.blue('\n--- Notes ---\n'));
-        for (const note of notes) {
-          console.log(chalk.dim(`  - ${note}`));
-        }
-        console.log();
-      }
-
-      if (notFixable > 0) {
-        console.log(
-          chalk.dim(
-            `(${notFixable} other auto-fixable gap(s) need a future release.)\n`
-          )
-        );
-      }
-
-      // Apply fixes based on risk level
-      if (options.apply) {
-        const fixesToApply: LocalFixWithRisk[] = [];
-
-        // Auto-apply safe fixes if --yes is set
-        if (options.yes && safeFixes.length > 0) {
-          fixesToApply.push(...safeFixes);
-          console.log(chalk.green(`\n✓ Auto-applying ${safeFixes.length} safe fix(es)...`));
-        } else if (safeFixes.length > 0) {
-          const applySafe = await confirm({
-            message: `Apply ${safeFixes.length} safe fix(es)?`,
-            default: true,
-          });
-          if (applySafe) {
-            fixesToApply.push(...safeFixes);
+      // Collect all files to write
+      const allFilesToWrite = new Map<string, string>();
+      for (const { filesWritten } of successfulFixes) {
+        if (filesWritten) {
+          for (const [path, content] of Object.entries(filesWritten)) {
+            allFilesToWrite.set(path, content);
           }
         }
+      }
 
-        // Ask about review fixes
-        if (reviewFixes.length > 0) {
-          const applyReview = await confirm({
-            message: `Apply ${reviewFixes.length} fix(es) that need review?`,
-            default: false,
-          });
-          if (applyReview) {
-            fixesToApply.push(...reviewFixes);
-          }
+      console.log();
+      ui.log.message(`Files to write (${allFilesToWrite.size}):`);
+
+      for (const [filePath, content] of allFilesToWrite) {
+        console.log(`  + ${filePath}`);
+
+        // Show diff if file exists
+        const fullPath = resolve(projectRoot, filePath);
+        try {
+          const original = await readFile(fullPath, 'utf-8');
+          displayDiff(original, content);
+        } catch {
+          // New file
+          const lines = content.split('\n').length;
+          console.log(`    (new file, ${lines} lines)`);
+        }
+      }
+
+      // Confirm and apply
+      const shouldApply = options.yes || await ui.confirm('Apply these changes?', true);
+
+      if (shouldApply) {
+        const s = ui.spinner();
+        s.start('Applying fixes...');
+
+        for (const [filePath, content] of allFilesToWrite) {
+          const fullPath = resolve(projectRoot, filePath);
+          await mkdir(dirname(fullPath), { recursive: true });
+          await writeFile(fullPath, content, 'utf-8');
         }
 
-        // Ask about careful fixes with warning
-        if (carefulFixes.length > 0) {
-          console.log(chalk.red.bold('\n⚠️  Security Warning'));
-          console.log(chalk.red('The following fixes affect authentication, authorization, or data access.'));
-          console.log(chalk.red('Please review them carefully before applying.\n'));
-
-          const applyCareful = await confirm({
-            message: `Apply ${carefulFixes.length} security-sensitive fix(es)?`,
-            default: false,
-          });
-          if (applyCareful) {
-            fixesToApply.push(...carefulFixes);
-          }
-        }
-
-        if (fixesToApply.length > 0) {
-          await applyBackendFixes(fixesToApply);
-          console.log(chalk.green(`\n✓ Applied ${fixesToApply.length} fix(es)!`));
-
-          // Remind about install commands
-          if (uniqueInstallCommands.length > 0) {
-            console.log(chalk.yellow('\nDon\'t forget to run the install commands:'));
-            for (const cmd of uniqueInstallCommands) {
-              console.log(chalk.cyan(`  ${cmd}`));
-            }
-          }
-
-          const skipped = dedupedFixes.length - fixesToApply.length;
-          if (skipped > 0) {
-            console.log(chalk.dim(`\n(${skipped} fix(es) were skipped)`));
-          }
-
-          console.log(
-            chalk.dim(
-              `\nRun ${chalk.cyan('lastmile analyze')} to verify, then ship when ready.\n`
-            )
-          );
-        } else {
-          console.log(chalk.dim('\nNo fixes were applied.\n'));
-        }
+        s.stop(`Applied ${allFilesToWrite.size} file(s)`);
+        ui.log.success('Fixes applied successfully');
       } else {
-        console.log(
-          chalk.dim(
-            `Run ${chalk.cyan('lastmile fix --apply')} to write these changes.\n`
-          )
-        );
+        ui.log.info('Changes not applied');
       }
+
+      // Summary
+      const failed = results.filter(r => !r.success);
+      if (failed.length > 0) {
+        console.log();
+        ui.log.warning(`${failed.length} fix(es) failed:`);
+        for (const { gap, error } of failed) {
+          console.log(`  - ${gap.title}: ${error}`);
+        }
+      }
+
+      ui.outro(`Run 'lastmile analyze' to verify fixes`);
+
     } catch (error) {
-      spinner.fail('Fix generation failed');
-      console.error(
-        chalk.red(error instanceof Error ? error.message : 'Unknown error')
-      );
+      if (error instanceof Error) {
+        ui.log.error(error.message);
+      } else {
+        ui.log.error('Unknown error occurred');
+      }
       process.exit(1);
     }
   });

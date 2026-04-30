@@ -1,8 +1,8 @@
 import type { Config } from './config.js';
-import type { AnalyzeResponse, Deployment, GeneratedFix, FileChange } from './types.js';
+import type { AnalyzeResponse, Deployment } from './types.js';
 
 // Re-export types
-export type { AnalyzeResponse, Deployment, Gap, Stack, ProjectAnalysis, GeneratedFix, FileChange } from './types.js';
+export type { AnalyzeResponse, Deployment, Gap, Stack, ProjectAnalysis } from './types.js';
 
 const DEFAULT_API_URL = 'http://localhost:3001';
 
@@ -165,36 +165,11 @@ export function createApiClient(config: Config) {
     },
 
     /**
-     * Generate a fix for a specific gap
+     * Fix a gap using AI agent
+     * The agent can read files, write fixes, and run tests to verify
      */
-    async generateFix(data: { gapId: string; files: Record<string, string> }): Promise<GeneratedFix> {
-      return request('/v1/fixes/generate', { method: 'POST', body: JSON.stringify(data) });
-    },
-
-    /**
-     * Generate fixes for all auto-fixable gaps in an analysis (requires DB)
-     * @deprecated Use generateStatelessFixes instead for CLI usage
-     */
-    async generateBatchFixes(data: {
-      analysisId: string;
-      files: Record<string, string>;
-      gapIds?: string[];
-    }): Promise<{
-      analysisId: string;
-      totalGaps: number;
-      fixesGenerated: number;
-      fixes: GeneratedFix[];
-      skipped: Array<{ gapId: string; reason: string }>;
-    }> {
-      return request('/v1/fixes/generate-batch', { method: 'POST', body: JSON.stringify(data) });
-    },
-
-    /**
-     * Generate fixes for gaps - stateless, no DB required
-     * Accepts gap data directly instead of looking it up from an analysis ID
-     */
-    async generateStatelessFixes(data: {
-      gaps: Array<{
+    async agentFix(data: {
+      gap: {
         id: string;
         category: string;
         severity: 'critical' | 'warning' | 'info';
@@ -204,220 +179,28 @@ export function createApiClient(config: Config) {
         lineNumber?: number;
         autoFixable: boolean;
         suggestedFix?: string;
-      }>;
+      };
       stack: {
         language: string | null;
         framework: string | null;
         database: string | null;
         orm?: string | null;
-        buildTool?: string | null;
-        packageManager?: string | null;
       };
       files: Record<string, string>;
+      maxIterations?: number;
     }): Promise<{
-      totalGaps: number;
-      fixesGenerated: number;
-      fixes: GeneratedFix[];
-      skipped: Array<{ gapId: string; reason: string }>;
-    }> {
-      // LLM fix generation can take several minutes for many gaps
-      const TEN_MINUTES = 10 * 60 * 1000;
-      return request('/v1/fixes/generate-stateless', { method: 'POST', body: JSON.stringify(data) }, TEN_MINUTES);
-    },
-
-    /**
-     * Generate fixes using the multi-agent orchestration system (recommended)
-     *
-     * This method uses the new orchestration system which:
-     * - Groups related fixes together
-     * - Handles dependencies between fixes
-     * - Properly deletes duplicate files
-     * - Uses specialized agents for different fix types
-     * - Validates fixes after generation
-     */
-    async generateOrchestratedFixes(data: {
-      gaps: Array<{
-        id: string;
-        category: string;
-        severity: 'critical' | 'warning' | 'info';
-        title: string;
-        description?: string;
-        filePath?: string;
-        lineNumber?: number;
-        autoFixable: boolean;
-        suggestedFix?: string;
-      }>;
-      stack: {
-        language: string | null;
-        framework: string | null;
-        database: string | null;
-        orm?: string | null;
-        buildTool?: string | null;
-        packageManager?: string | null;
-      };
-      files: Record<string, string>;
-    }): Promise<{
-      totalGaps: number;
-      fixesGenerated: number;
-      fixes: GeneratedFix[];
-      skipped: Array<{ gapId: string; reason: string }>;
-      usedOrchestration: boolean;
-      fallbackReason?: string;
-      orchestration?: {
-        status: 'SUCCESS' | 'PARTIAL' | 'FAILED';
-        summary: string;
-        plan: {
-          fixSetsCount: number;
-          batchesCount: number;
-          warnings: string[];
-          estimatedCost: {
-            inputTokens: number;
-            outputTokens: number;
-            estimatedCostUsd: number;
-            llmCalls: number;
-          };
-        };
-        validation: {
-          resolvedCount: number;
-          unresolvedCount: number;
-          regressionsCount: number;
-          recommendation: 'COMPLETE' | 'RETRY_PARTIAL' | 'MANUAL_REVIEW';
-        } | null;
-        fileOperations: Array<{ type: string; path: string }>;
-      };
-    }> {
-      // Orchestration can take longer due to multiple specialist agents
-      const FIFTEEN_MINUTES = 15 * 60 * 1000;
-      return request('/v1/fixes/generate-orchestrated', { method: 'POST', body: JSON.stringify(data) }, FIFTEEN_MINUTES);
-    },
-
-    /**
-     * Get supported fix categories
-     */
-    async getSupportedFixCategories(): Promise<{ categories: string[] }> {
-      return request('/v1/fixes/supported-categories');
-    },
-
-    /**
-     * Stream fix generation with progress events
-     */
-    async *generateFixesStream(data: {
-      gaps: Array<{
-        id: string;
-        category: string;
-        severity: 'critical' | 'warning' | 'info';
-        title: string;
-        description?: string;
-        filePath?: string;
-        lineNumber?: number;
-        autoFixable: boolean;
-        suggestedFix?: string;
-      }>;
-      stack: {
-        language: string | null;
-        framework: string | null;
-        database: string | null;
-        orm?: string | null;
-      };
-      files: Record<string, string>;
-    }): AsyncGenerator<{
-      type: 'start' | 'progress' | 'complete' | 'error';
-      current?: number;
-      total?: number;
+      success: boolean;
       gapId?: string;
-      gapTitle?: string;
-      success?: boolean;
+      summary: string;
+      filesWritten: Record<string, string>;
+      iterations: number;
+      tokensUsed: number;
+      estimatedCost?: number;
+      agentType?: string;
       error?: string;
-      message?: string;
-      fixes?: GeneratedFix[];
-      skipped?: Array<{ gapId: string; reason: string }>;
     }> {
-      const controller = new AbortController();
-
-      // Clean up on process signals
-      const cleanup = () => controller.abort();
-      process.on('SIGINT', cleanup);
-      process.on('SIGTERM', cleanup);
-
-      try {
-        const response = await fetch(`${baseUrl}/v1/fixes/generate-stream`, {
-          method: 'POST',
-          signal: controller.signal,
-          headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'text/event-stream',
-            ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-          },
-          body: JSON.stringify(data),
-        });
-
-        if (!response.ok) {
-          const error = await response.json().catch(() => ({ message: 'Unknown error' }));
-          throw new Error(error.message || error.error || `HTTP ${response.status}`);
-        }
-
-        const reader = response.body?.getReader();
-        if (!reader) {
-          throw new Error('No response body');
-        }
-
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        const processLine = (line: string) => {
-          if (line.startsWith('data:')) {
-            const jsonData = line.slice(5).trim();
-            if (jsonData) {
-              try {
-                return JSON.parse(jsonData);
-              } catch {
-                // Skip malformed JSON
-              }
-            }
-          }
-          return null;
-        };
-
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-
-            if (value) {
-              buffer += decoder.decode(value, { stream: true });
-            }
-
-            // Process all complete lines in buffer
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            for (const line of lines) {
-              const event = processLine(line);
-              if (event) {
-                yield event;
-                if (event.type === 'complete' || event.type === 'error') {
-                  return;
-                }
-              }
-            }
-
-            if (done) {
-              // Process any remaining data in buffer
-              if (buffer.trim()) {
-                const event = processLine(buffer);
-                if (event) {
-                  yield event;
-                }
-              }
-              break;
-            }
-          }
-        } finally {
-          reader.cancel().catch(() => {});
-        }
-      } finally {
-        process.off('SIGINT', cleanup);
-        process.off('SIGTERM', cleanup);
-      }
+      const TEN_MINUTES = 10 * 60 * 1000;
+      return request('/v1/fixes/agent', { method: 'POST', body: JSON.stringify(data) }, TEN_MINUTES);
     },
 
     async deploy(data: { platform: string; token: string; files: Record<string, string> }): Promise<Deployment> {
