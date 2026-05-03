@@ -397,57 +397,91 @@ export async function selectGapsToFix(gaps: GapChoice[]): Promise<string[]> {
   const warnings = gaps.filter(g => g.severity === 'warning');
   const infoGaps = gaps.filter(g => g.severity === 'info');
 
-  // Build choices with separators for groups
+  // Track group membership for toggle functionality
+  const groupIds: Record<string, string[]> = {
+    'group:critical': critical.map(g => g.id),
+    'group:warnings': warnings.map(g => g.id),
+    'group:info': infoGaps.map(g => g.id),
+  };
+
+  // Build choices with group headers as selectable items
   const choices: Array<{ name: string; value: string; checked?: boolean } | typeof Separator.prototype> = [];
 
   if (critical.length > 0) {
-    choices.push(new Separator(chalk.red.bold(`── Critical (${critical.length}) ──`)));
+    choices.push({
+      name: chalk.red.bold(`■ Critical (${critical.length}) — select to toggle all`),
+      value: 'group:critical',
+      checked: false,
+    });
     for (const gap of critical) {
       const title = gap.title.length > 50 ? gap.title.slice(0, 47) + '...' : gap.title;
       const hint = gap.filePath ? chalk.dim(` ${gap.filePath}`) : '';
       choices.push({
-        name: `${chalk.red('●')} ${title}${hint}`,
+        name: `  ${chalk.red('●')} ${title}${hint}`,
         value: gap.id,
-        checked: true,
+        checked: false,
       });
     }
   }
 
   if (warnings.length > 0) {
-    choices.push(new Separator(chalk.yellow.bold(`── Warnings (${warnings.length}) ──`)));
+    choices.push({
+      name: chalk.yellow.bold(`■ Warnings (${warnings.length}) — select to toggle all`),
+      value: 'group:warnings',
+      checked: false,
+    });
     for (const gap of warnings) {
       const title = gap.title.length > 50 ? gap.title.slice(0, 47) + '...' : gap.title;
       const hint = gap.filePath ? chalk.dim(` ${gap.filePath}`) : '';
       choices.push({
-        name: `${chalk.yellow('●')} ${title}${hint}`,
+        name: `  ${chalk.yellow('●')} ${title}${hint}`,
         value: gap.id,
-        checked: true,
+        checked: false,
       });
     }
   }
 
   if (infoGaps.length > 0) {
-    choices.push(new Separator(chalk.gray.bold(`── Info (${infoGaps.length}) ──`)));
+    choices.push({
+      name: chalk.gray.bold(`■ Info (${infoGaps.length}) — select to toggle all`),
+      value: 'group:info',
+      checked: false,
+    });
     for (const gap of infoGaps) {
       const title = gap.title.length > 50 ? gap.title.slice(0, 47) + '...' : gap.title;
       const hint = gap.filePath ? chalk.dim(` ${gap.filePath}`) : '';
       choices.push({
-        name: `${chalk.gray('●')} ${title}${hint}`,
+        name: `  ${chalk.gray('●')} ${title}${hint}`,
         value: gap.id,
-        checked: false, // Info not checked by default
+        checked: false,
       });
     }
   }
 
   console.log();
+  console.log(brand.dim('  ↑/↓ navigate • space select • a toggle all • enter confirm'));
+  console.log();
+
   const selected = await checkbox({
-    message: 'Select issues to fix (space to toggle, enter to confirm)',
+    message: 'Select issues to fix',
     choices,
-    pageSize: 15,
+    pageSize: 20,
     loop: false,
+    required: true,
   });
 
-  return selected;
+  // Expand group selections to individual gap IDs
+  const expandedSelection: string[] = [];
+  for (const id of selected) {
+    if (id.startsWith('group:') && groupIds[id]) {
+      expandedSelection.push(...groupIds[id]);
+    } else if (!id.startsWith('group:')) {
+      expandedSelection.push(id);
+    }
+  }
+
+  // Dedupe in case user selected both group and individual items
+  return [...new Set(expandedSelection)];
 }
 
 // Re-export clack prompts for compatibility

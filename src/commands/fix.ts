@@ -1,10 +1,9 @@
 import { Command } from 'commander';
 import { resolve, dirname } from 'path';
-import { writeFile, mkdir, readFile } from 'fs/promises';
+import { writeFile, mkdir } from 'fs/promises';
 import { loadConfig } from '../lib/config.js';
 import { createApiClient } from '../lib/api-client.js';
 import { collectFiles } from '../lib/file-collector.js';
-import { displayDiff } from '../lib/diff.js';
 import * as ui from '../lib/ui.js';
 
 interface Gap {
@@ -32,9 +31,6 @@ export const fixCommand = new Command('fix')
   .argument('[path]', 'Project directory', '.')
   .option('-d, --dir <path>', 'Project directory (alternative to positional argument)')
   .option('--dry-run', 'Preview fixes without applying them')
-  .option('--all', 'Fix all issues (critical + warnings, skip info)')
-  .option('--critical', 'Fix critical issues only')
-  .option('-n, --count <number>', 'Number of issues to fix', '5')
   .action(async (pathArg, options) => {
     const config = await loadConfig();
     const api = createApiClient(config);
@@ -76,6 +72,9 @@ export const fixCommand = new Command('fix')
       if (!analysis) throw new Error('Analysis did not complete');
       s.stop('Analysis complete');
 
+      // Show detected stack
+      ui.stack(analysis.stack);
+
       // Filter to auto-fixable
       const fixable = gaps.filter(g => g.autoFixable);
       if (fixable.length === 0) {
@@ -101,44 +100,27 @@ export const fixCommand = new Command('fix')
       if (info.length > 0) console.log(`    \x1b[90m●\x1b[0m ${info.length} info`);
       console.log();
 
-      // Determine what to fix based on flags
-      let gapsToFix: Gap[];
-      const maxCount = parseInt(options.count) || 5;
+      // Interactive selection
+      const selectedIds = await ui.selectGapsToFix(
+        fixable.map(g => ({
+          id: g.id,
+          title: g.title,
+          severity: g.severity,
+          filePath: g.filePath,
+        }))
+      );
 
-      if (options.all) {
-        // All critical + warnings (skip info)
-        gapsToFix = [...critical, ...warnings];
-      } else if (options.critical) {
-        // Critical only
-        gapsToFix = critical;
-      } else {
-        // Default: top N by severity (critical first, then warnings)
-        gapsToFix = [...critical, ...warnings].slice(0, maxCount);
-      }
-
-      if (gapsToFix.length === 0) {
-        ui.info('No issues to fix with current filters');
+      if (selectedIds.length === 0) {
+        console.log();
+        ui.info('No issues selected');
         console.log();
         return;
       }
 
-      // Show what we'll fix
-      console.log(`  Fixing ${gapsToFix.length} issues:`);
-      console.log();
-      for (const gap of gapsToFix.slice(0, 10)) {
-        const icon = gap.severity === 'critical' ? '\x1b[31m●\x1b[0m' :
-                     gap.severity === 'warning' ? '\x1b[33m●\x1b[0m' : '\x1b[90m●\x1b[0m';
-        const title = gap.title.length > 55 ? gap.title.slice(0, 52) + '...' : gap.title;
-        console.log(`    ${icon} ${title}`);
-      }
-      if (gapsToFix.length > 10) {
-        console.log(`    \x1b[90m... and ${gapsToFix.length - 10} more\x1b[0m`);
-      }
-      console.log();
+      const gapsToFix = fixable.filter(g => selectedIds.includes(g.id));
 
+      console.log();
       ui.divider();
-      console.log();
-
       console.log();
 
       // Fix each gap and apply immediately
@@ -153,7 +135,6 @@ export const fixCommand = new Command('fix')
         try {
           let result: { success?: boolean; filesWritten?: Record<string, string>; error?: string } = {};
 
-          // Use streaming endpoint for real-time progress
           for await (const event of api.agentFixStream({
             gap: {
               id: gap.id,
@@ -195,13 +176,11 @@ export const fixCommand = new Command('fix')
           if (result.success && result.filesWritten) {
             const fileCount = Object.keys(result.filesWritten).length;
 
-            // Apply immediately unless --dry-run
             if (!options.dryRun) {
               for (const [filePath, content] of Object.entries(result.filesWritten)) {
                 const fullPath = resolve(projectRoot, filePath);
                 await mkdir(dirname(fullPath), { recursive: true });
                 await writeFile(fullPath, content, 'utf-8');
-                // Update in-memory files for subsequent fixes
                 files.set(filePath, content);
               }
             }
@@ -240,7 +219,7 @@ export const fixCommand = new Command('fix')
       if (remaining > 0) {
         console.log();
         ui.info(`${remaining} more issues remaining`);
-        ui.cta('Fix more with', 'lastmile fix --all');
+        ui.cta('Run again to fix more', 'lastmile fix');
       } else {
         console.log();
         ui.cta('Verify fixes', 'lastmile analyze');
