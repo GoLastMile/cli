@@ -1,11 +1,8 @@
 import { Command } from 'commander';
-import { initCommand } from './commands/init.js';
-import { analyzeCommand } from './commands/analyze.js';
-import { fixCommand } from './commands/fix.js';
-import { deployCommand } from './commands/deploy.js';
 import { shipCommand } from './commands/ship.js';
 import { loginCommand } from './commands/login.js';
 import { logoutCommand } from './commands/logout.js';
+import { apiKeyCommand } from './commands/api-key.js';
 
 const program = new Command();
 
@@ -16,10 +13,7 @@ program
 
 program.addCommand(loginCommand);
 program.addCommand(logoutCommand);
-program.addCommand(initCommand);
-program.addCommand(analyzeCommand);
-program.addCommand(fixCommand);
-program.addCommand(deployCommand);
 program.addCommand(shipCommand);
+program.addCommand(apiKeyCommand);
 
 program.parse();

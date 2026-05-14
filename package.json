@@ -1,6 +1,6 @@
 {
-  "name": "lastmile",
-  "version": "0.1.0",
+  "name": "golastmile",
+  "version": "0.1.2",
   "description": "Ship your vibe-coded projects to production",
   "type": "module",
   "bin": {

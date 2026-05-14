@@ -518,6 +518,18 @@ export async function multiselect<T extends string>(
   return result as T[];
 }
 
+export async function text(message: string, placeholder?: string): Promise<string> {
+  const result = await p.text({
+    message: `  ${message}`,
+    placeholder,
+  });
+  if (p.isCancel(result)) {
+    p.cancel('Cancelled');
+    process.exit(0);
+  }
+  return result || '';
+}
+
 export function intro(title: string) {
   console.log();
   p.intro(brand.bold(title));

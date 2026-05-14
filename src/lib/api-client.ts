@@ -4,7 +4,7 @@ import type { AnalyzeResponse, Deployment } from './types.js';
 // Re-export types
 export type { AnalyzeResponse, Deployment, Gap, Stack, ProjectAnalysis } from './types.js';
 
-const DEFAULT_API_URL = 'http://localhost:3001';
+const DEFAULT_API_URL = 'https://api.lastmile.sh';
 
 export function createApiClient(config: Config) {
   const baseUrl = process.env.LASTMILE_API_URL || DEFAULT_API_URL;
@@ -596,5 +596,52 @@ export function createApiClient(config: Config) {
     }> {
       return request(`/v1/projects/${id}`);
     },
+
+    // =========================================================================
+    // API Keys
+    // =========================================================================
+
+    /**
+     * Create a new API key
+     */
+    async createApiKey(data: { name: string; expiresInDays?: number }): Promise<{
+      id: string;
+      key: string;
+      name: string;
+      keyPrefix: string;
+      createdAt: string;
+    }> {
+      return request('/v1/auth/api-keys', { method: 'POST', body: JSON.stringify(data) });
+    },
+
+    /**
+     * List API keys
+     */
+    async listApiKeys(): Promise<{
+      keys: Array<{
+        id: string;
+        name: string;
+        keyPrefix: string;
+        createdAt: string;
+        lastUsedAt: string | null;
+        expiresAt: string | null;
+      }>;
+    }> {
+      return request('/v1/auth/api-keys');
+    },
+
+    /**
+     * Revoke an API key
+     */
+    async revokeApiKey(id: string): Promise<{ success: boolean }> {
+      return request(`/v1/auth/api-keys/${id}`, { method: 'DELETE' });
+    },
+
+    // =========================================================================
+    // Auto-Deploy (Deploy-First Architecture)
+    // =========================================================================
+
+    // Note: Auto-deploy methods removed - deployment now happens via GitHub Actions
+    // The CLI just generates the workflow file, doesn't call our API directly for deploy
   };
 }

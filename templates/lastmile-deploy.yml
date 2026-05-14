@@ -1,0 +1,25 @@
+name: Deploy to LastMile
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install LastMile CLI
+        run: npm install -g @lastmile/cli
+
+      - name: Deploy
+        run: lastmile ship --yes
+        env:
+          LASTMILE_API_KEY: ${{ secrets.LASTMILE_API_KEY }}
